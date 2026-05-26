@@ -36,6 +36,7 @@ def fake_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_STACK_DIR", str(stack))
     monkeypatch.setenv("ORCHESTRATOR_KEY", "topsecret")
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_TEST_BINDIR", str(bindir))
 
     log_dir = tmp_path / "logs"
     log_dir.mkdir()

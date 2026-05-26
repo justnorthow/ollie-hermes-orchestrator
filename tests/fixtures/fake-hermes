@@ -6,6 +6,15 @@ case "$1 $2" in
   "profile create")
     mkdir -p "${HERMES_PROFILES_DIR}/$3"
     : > "${HERMES_PROFILES_DIR}/$3/.env"
+    # Install per-profile shim if FAKE_TEST_BINDIR is set
+    if [ -n "${FAKE_TEST_BINDIR}" ]; then
+      cat > "${FAKE_TEST_BINDIR}/$3" <<'SHIM'
+#!/usr/bin/env bash
+echo "$@" >> "${FAKE_HERMES_LOG:-/tmp/fake-hermes.log}"
+exit 0
+SHIM
+      chmod +x "${FAKE_TEST_BINDIR}/$3"
+    fi
     ;;
   "profile delete")
     rm -rf "${HERMES_PROFILES_DIR:?}/$3"

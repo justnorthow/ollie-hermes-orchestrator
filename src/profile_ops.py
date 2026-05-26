@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
 from src.config import Config
 
@@ -15,7 +14,7 @@ def _resolve(bin_name: str) -> str:
     return resolved if resolved else bin_name
 
 
-def _profiles_dir() -> Path:
+def _profiles_dir():
     return Config.load().hermes_profiles_dir
 
 

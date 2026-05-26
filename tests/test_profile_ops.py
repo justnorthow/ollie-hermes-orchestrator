@@ -33,3 +33,13 @@ def test_delete_profile_removes_dir(fake_env):
     assert (fake_env["profiles"] / "paige").is_dir()
     delete_profile("paige")
     assert not (fake_env["profiles"] / "paige").exists()
+
+
+def test_set_config_invokes_per_profile_shim(fake_env):
+    from src.profile_ops import set_config
+    create_profile("paige")
+    set_config("paige", "model", "claude-sonnet-4.6")
+    log = (fake_env["logs"] / "hermes.log").read_text()
+    # The per-profile shim is created during `profile create paige` and writes
+    # to the same log file. We expect the config set call to be recorded.
+    assert "config set model claude-sonnet-4.6" in log
