@@ -53,8 +53,8 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
     def _ev(step: str, **extras) -> dict:
         return {"step": step, "ok": True, **extras}
 
-    try:
-        with file_lock(cfg.hermes_stack_dir / ".agents.lock"):
+    with file_lock(cfg.hermes_stack_dir / ".agents.lock"):
+        try:
             # 1. validate
             existing = read_agents(env_path)
             if any(e.id == req.name for e in existing):
@@ -140,13 +140,13 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
             yield {"event": "done", "agent": agent.model_dump(),
                    "duration_ms": int((time.monotonic() - started) * 1000)}
 
-    except Exception as exc:
-        _logger.exception("create_agent failed at step=%s",
-                          completed_steps[-1] if completed_steps else "?")
-        yield {"event": "error",
-               "step": completed_steps[-1] if completed_steps else "init",
-               "error": str(exc)}
-        await _rollback_create(req.name, completed_steps, env_path)
+        except Exception as exc:
+            _logger.exception("create_agent failed at step=%s",
+                              completed_steps[-1] if completed_steps else "?")
+            yield {"event": "error",
+                   "step": completed_steps[-1] if completed_steps else "init",
+                   "error": str(exc)}
+            await _rollback_create(req.name, completed_steps, env_path)
 
 
 async def _rollback_create(name: str, completed_steps: list[str], env_path) -> None:
