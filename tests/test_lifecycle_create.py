@@ -32,6 +32,27 @@ async def test_create_agent_happy_path_emits_all_steps(fake_env):
 
 
 @pytest.mark.asyncio
+async def test_create_agent_inherit_skips_provider_creds(fake_env):
+    """auth_method='inherit' must NOT write any provider key into the profile .env.
+    Hermes inherits whatever auth the host already has (OAuth, Codex, etc.)."""
+    req = CreateRequest(
+        name="codex-agent",
+        display_name=None, color=None,
+        provider="anthropic",
+        model="claude-sonnet-4.6",
+        api_key=None,
+        system_prompt=None, enabled_skills=[],
+        api_server_key="shared",
+        auth_method="inherit",
+    )
+    events = [ev async for ev in create_agent(req)]
+    assert events[-1].get("event") == "done"
+    profile_env = (fake_env["profiles"] / "codex-agent" / ".env").read_text()
+    assert "ANTHROPIC_API_KEY" not in profile_env
+    assert "API_SERVER_PORT=" in profile_env  # API_SERVER_* still written
+
+
+@pytest.mark.asyncio
 async def test_create_agent_rejects_duplicate_name(fake_env):
     base = dict(
         display_name="X", color=None, provider="anthropic", model="m",

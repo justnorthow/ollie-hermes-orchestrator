@@ -55,6 +55,7 @@ async def create(body: CreateAgent, request: Request) -> StreamingResponse:
         system_prompt=body.systemPrompt,
         enabled_skills=body.enabledSkills,
         api_server_key=api_key,
+        auth_method=body.authMethod,
     )
 
     async def stream():

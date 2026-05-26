@@ -1,6 +1,6 @@
 import re
-from typing import Optional
-from pydantic import BaseModel, Field, field_validator
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{2,30}$")
@@ -17,13 +17,21 @@ def validate_agent_name(name: str) -> None:
         raise ValueError(f"name '{name}' is reserved")
 
 
+AuthMethod = Literal["api_key", "inherit"]
+
+
 class CreateAgent(BaseModel):
     name: str
     displayName: Optional[str] = None
     color: Optional[str] = None
     provider: str
     model: str
-    apiKey: str = Field(min_length=1)
+    # `authMethod` selects how the new profile authenticates with the LLM provider.
+    #   "api_key"  — orchestrator writes the supplied apiKey into the profile's .env (default).
+    #   "inherit"  — skip writing provider creds; Hermes inherits whatever the host has
+    #                already configured (OAuth tokens, ambient env vars, Codex/Claude Code CLI).
+    authMethod: AuthMethod = "api_key"
+    apiKey: Optional[str] = None
     systemPrompt: Optional[str] = None
     enabledSkills: list[str] = Field(default_factory=list)
 
@@ -32,6 +40,13 @@ class CreateAgent(BaseModel):
     def _valid_name(cls, v: str) -> str:
         validate_agent_name(v)
         return v
+
+    @model_validator(mode="after")
+    def _validate_credentials(self) -> "CreateAgent":
+        # api_key auth requires a non-empty key; inherit auth must have no key (defense-in-depth)
+        if self.authMethod == "api_key" and not (self.apiKey or "").strip():
+            raise ValueError("apiKey is required when authMethod is 'api_key'")
+        return self
 
 
 class UpdateAgent(BaseModel):

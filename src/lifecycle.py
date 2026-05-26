@@ -31,10 +31,14 @@ class CreateRequest:
     color: Optional[str]
     provider: str
     model: str
-    api_key: str
+    api_key: Optional[str]
     system_prompt: Optional[str]
     enabled_skills: list[str]
     api_server_key: str
+    # "api_key" writes provider creds into the profile .env (default).
+    # "inherit" skips them so Hermes uses whatever auth the host has already
+    # configured (Codex OAuth, Claude Code CLI, ambient env vars).
+    auth_method: str = "api_key"
 
 
 def _pick_color(existing_colors: list[str]) -> str:
@@ -78,14 +82,21 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
             completed_steps.append("create_profile")
 
             # 4. write profile .env
-            provider_var = _PROVIDER_ENV_VAR.get(req.provider, f"{req.provider.upper()}_API_KEY")
+            # Only write provider creds when auth_method is "api_key". For
+            # "inherit", leave provider env unset so Hermes picks up OAuth
+            # tokens or ambient credentials from the host environment.
+            if req.auth_method == "api_key" and req.api_key:
+                provider_var = _PROVIDER_ENV_VAR.get(req.provider, f"{req.provider.upper()}_API_KEY")
+                provider_creds = {provider_var: req.api_key}
+            else:
+                provider_creds = {}
             write_profile_env(
                 req.name,
-                provider_creds={provider_var: req.api_key},
+                provider_creds=provider_creds,
                 api_server_port=ports.gateway,
                 api_server_key=req.api_server_key,
             )
-            yield _ev("write_profile_env")
+            yield _ev("write_profile_env", auth_method=req.auth_method)
             completed_steps.append("write_profile_env")
 
             # 5. apply per-profile config
