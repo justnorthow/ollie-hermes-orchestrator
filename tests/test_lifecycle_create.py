@@ -1,0 +1,68 @@
+import pytest
+from src.lifecycle import create_agent, CreateRequest
+
+
+@pytest.mark.asyncio
+async def test_create_agent_happy_path_emits_all_steps(fake_env):
+    req = CreateRequest(
+        name="paige",
+        display_name="Paige",
+        color="#aabbcc",
+        provider="anthropic",
+        model="claude-sonnet-4.6",
+        api_key="sk-x",
+        system_prompt=None,
+        enabled_skills=[],
+        api_server_key="shared",
+    )
+    events = [ev async for ev in create_agent(req)]
+    steps = [ev["step"] for ev in events if "step" in ev]
+    assert "validate" in steps
+    assert "allocate_ports" in steps
+    assert "create_profile" in steps
+    assert "write_profile_env" in steps
+    assert "install_gateway" in steps
+    assert "install_dashboard" in steps
+    assert "update_agents_json" in steps
+    assert "bounce_dashboard" in steps
+    final = events[-1]
+    assert final.get("event") == "done"
+    assert final["agent"]["id"] == "paige"
+    assert (fake_env["profiles"] / "paige").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_create_agent_rejects_duplicate_name(fake_env):
+    base = dict(
+        display_name="X", color=None, provider="anthropic", model="m",
+        api_key="k", system_prompt=None, enabled_skills=[], api_server_key="s",
+    )
+    [ev async for ev in create_agent(CreateRequest(name="paige", **base))]
+    events = [ev async for ev in create_agent(CreateRequest(name="paige", **base))]
+    assert any(ev.get("event") == "error" for ev in events)
+
+
+@pytest.mark.asyncio
+async def test_create_agent_rolls_back_on_systemd_failure(fake_env, monkeypatch):
+    from src import lifecycle
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("systemd is sad")
+
+    # patch the reference inside lifecycle (not systemd_ops) so the lifecycle
+    # module's import binding is replaced
+    monkeypatch.setattr(lifecycle, "install_dashboard_service", boom)
+
+    req = CreateRequest(
+        name="ghost", display_name=None, color=None, provider="anthropic",
+        model="m", api_key="k", system_prompt=None, enabled_skills=[],
+        api_server_key="s",
+    )
+    events = [ev async for ev in create_agent(req)]
+    assert any(ev.get("event") == "error" for ev in events)
+    # profile dir was rolled back
+    assert not (fake_env["profiles"] / "ghost").exists()
+    # nothing in AGENTS_JSON
+    from src.agents_json import read_agents
+    entries = read_agents(fake_env["stack"] / ".env")
+    assert all(e.id != "ghost" for e in entries)
