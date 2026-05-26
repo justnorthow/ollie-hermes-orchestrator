@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "$@" >> "${FAKE_DOCKER_LOG:-/tmp/fake-docker.log}"
+exit 0

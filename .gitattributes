@@ -1,0 +1,4 @@
+tests/fixtures/fake-hermes text eol=lf
+tests/fixtures/fake-systemctl text eol=lf
+tests/fixtures/fake-docker text eol=lf
+tests/fixtures/*.cmd text eol=crlf

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "$@" >> "${FAKE_SYSTEMCTL_LOG:-/tmp/fake-systemctl.log}"
+exit 0

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Records argv to $FAKE_HERMES_LOG; writes expected files when applicable.
+echo "$@" >> "${FAKE_HERMES_LOG:-/tmp/fake-hermes.log}"
+
+case "$1 $2" in
+  "profile create")
+    mkdir -p "${HERMES_PROFILES_DIR}/$3"
+    : > "${HERMES_PROFILES_DIR}/$3/.env"
+    ;;
+  "profile delete")
+    rm -rf "${HERMES_PROFILES_DIR:?}/$3"
+    ;;
+esac
+exit 0
