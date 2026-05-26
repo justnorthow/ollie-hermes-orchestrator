@@ -24,8 +24,19 @@ def create_profile(name: str) -> None:
 
 
 def delete_profile(name: str) -> None:
-    """Remove the profile directory."""
-    subprocess.run([_resolve(_HERMES_BIN), "profile", "delete", name], check=False)
+    """Run `hermes profile delete <name>` and best-effort clean the dir.
+
+    Hermes' delete is interactive — it lists what will be deleted and asks
+    the user to type the profile name to confirm. We pipe the name into
+    stdin to satisfy that prompt. If Hermes fails for any reason (e.g.
+    binary missing during rollback), we fall back to removing the profile
+    directory directly."""
+    subprocess.run(
+        [_resolve(_HERMES_BIN), "profile", "delete", name],
+        check=False,
+        input=f"{name}\n",
+        text=True,
+    )
     target = _profiles_dir() / name
     if target.exists():
         shutil.rmtree(target)

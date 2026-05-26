@@ -36,8 +36,17 @@ def _systemctl(*args: str) -> None:
 
 
 def install_gateway_service(name: str) -> None:
-    # Hermes' per-profile CLI installs the gateway service itself.
-    subprocess.run([_resolve(name), "gateway", "install"], check=True, input="y\n", text=True)
+    """Run `<name> gateway install`. Hermes asks two interactive prompts:
+      1. "Start the gateway now after installing the service? [Y/n]"
+      2. "Start the gateway automatically on login/boot with systemd? [Y/n]"
+    Feed a generous supply of 'y' answers so we cover both prompts (and any
+    future ones Hermes adds) without blocking on stdin."""
+    subprocess.run(
+        [_resolve(name), "gateway", "install"],
+        check=True,
+        input="y\n" * 10,
+        text=True,
+    )
 
 
 def install_dashboard_service(name: str, *, port: int) -> None:
