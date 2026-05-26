@@ -1,0 +1,15 @@
+[Unit]
+Description=Ollie Orchestrator (agent management API)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ollie-hermes-orchestrator
+Environment=PATH=%h/ollie-hermes-orchestrator/.venv/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=%h/.config/ollie-orchestrator/.env
+ExecStart=%h/ollie-hermes-orchestrator/.venv/bin/uvicorn src.api.main:app --host 0.0.0.0 --port 9123
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
