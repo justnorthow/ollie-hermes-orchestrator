@@ -170,3 +170,107 @@ async def _rollback_create(name: str, completed_steps: list[str], env_path) -> N
             delete_profile(name)
         except Exception:
             _logger.warning("rollback: delete_profile failed", exc_info=True)
+
+
+@dataclass
+class UpdateRequest:
+    displayName: Optional[str] = None
+    color: Optional[str] = None
+    model: Optional[str] = None
+    systemPrompt: Optional[str] = None
+    enabledSkills: Optional[list[str]] = None
+    apiKey: Optional[str] = None
+    restart: bool = True
+
+
+_RESTART_REQUIRED = {"model", "systemPrompt", "enabledSkills", "apiKey"}
+_RESERVED_AGENT_IDS = {"default"}
+
+
+async def delete_agent(agent_id: str) -> dict:
+    if agent_id in _RESERVED_AGENT_IDS:
+        return {"ok": False, "error": "agent_id is reserved (default profile)"}
+    cfg = Config.load()
+    env_path = cfg.hermes_stack_dir / ".env"
+    with file_lock(cfg.hermes_stack_dir / ".agents.lock"):
+        existing = read_agents(env_path)
+        if not any(e.id == agent_id for e in existing):
+            return {"ok": False, "error": "not_found"}
+        # tear down in reverse-create order
+        try:
+            stop_and_remove_service(f"hermes-dashboard-{agent_id}")
+        except Exception:
+            _logger.warning("delete: dashboard svc failed", exc_info=True)
+        try:
+            stop_and_remove_service(f"hermes-gateway-{agent_id}")
+        except Exception:
+            _logger.warning("delete: gateway svc failed", exc_info=True)
+        try:
+            delete_profile(agent_id)
+        except Exception:
+            _logger.warning("delete: profile dir failed", exc_info=True)
+        try:
+            remove_agent(env_path, agent_id)
+        except Exception:
+            _logger.warning("delete: AGENTS_JSON failed", exc_info=True)
+        try:
+            bounce_dashboard()
+        except Exception:
+            _logger.warning("delete: dashboard bounce failed", exc_info=True)
+        return {"ok": True}
+
+
+async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
+    cfg = Config.load()
+    env_path = cfg.hermes_stack_dir / ".env"
+    with file_lock(cfg.hermes_stack_dir / ".agents.lock"):
+        existing = read_agents(env_path)
+        entry = next((e for e in existing if e.id == agent_id), None)
+        if entry is None:
+            return {"ok": False, "error": "not_found"}
+
+        # which fields actually changed (non-None means caller set them)
+        changed = {k: v for k, v in vars(req).items() if v is not None and k != "restart"}
+        needs_restart = bool(set(changed) & _RESTART_REQUIRED)
+
+        # Apply profile-config changes
+        if req.model is not None:
+            set_config(agent_id, "model", req.model)
+        if req.systemPrompt is not None:
+            set_config(agent_id, "system_prompt", req.systemPrompt)
+        if req.apiKey is not None:
+            provider_var = "ANTHROPIC_API_KEY"  # TODO: read existing provider
+            write_profile_env(
+                agent_id,
+                provider_creds={provider_var: req.apiKey},
+                api_server_port=entry.gateway_port,
+                api_server_key="shared",
+            )
+
+        # Apply AGENTS_JSON changes
+        new_entry = AgentEntry(
+            id=entry.id,
+            name=req.displayName if req.displayName is not None else entry.name,
+            gateway_port=entry.gateway_port,
+            dashboard_port=entry.dashboard_port,
+            color=req.color if req.color is not None else entry.color,
+            model=req.model if req.model is not None else entry.model,
+        )
+        write_agent(env_path, new_entry)
+
+        restarted = False
+        if needs_restart and req.restart:
+            try:
+                _systemctl_restart(f"hermes-gateway-{agent_id}")
+                restarted = True
+            except Exception:
+                _logger.warning("update: gateway restart failed", exc_info=True)
+
+        return {"ok": True, "restarted": restarted}
+
+
+def _systemctl_restart(unit: str) -> None:
+    import subprocess
+    import shutil
+    bin_ = shutil.which("systemctl") or "systemctl"
+    subprocess.run([bin_, "--user", "restart", unit], check=True)
