@@ -1,0 +1,35 @@
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Config:
+    orchestrator_key: str
+    hermes_stack_dir: Path
+    hermes_profiles_dir: Path
+    systemd_user_dir: Path
+    audit_log_path: Path
+
+    @classmethod
+    def load(cls) -> "Config":
+        key = os.environ.get("ORCHESTRATOR_KEY", "").strip()
+        if not key:
+            raise ConfigError("ORCHESTRATOR_KEY is not set")
+        home = Path(os.environ.get("HOME", os.path.expanduser("~")))
+        stack = Path(os.environ.get("HERMES_STACK_DIR", home / "hermes-stack"))
+        profiles = Path(os.environ.get("HERMES_PROFILES_DIR", home / ".hermes" / "profiles"))
+        systemd_dir = Path(os.environ.get("SYSTEMD_USER_DIR", home / ".config" / "systemd" / "user"))
+        audit = Path(os.environ.get("AUDIT_LOG_PATH",
+                                    home / ".local" / "state" / "ollie-orchestrator" / "audit.log"))
+        return cls(
+            orchestrator_key=key,
+            hermes_stack_dir=stack,
+            hermes_profiles_dir=profiles,
+            systemd_user_dir=systemd_dir,
+            audit_log_path=audit,
+        )
