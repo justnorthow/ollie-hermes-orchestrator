@@ -68,3 +68,37 @@ def write_profile_env(
 def set_config(name: str, key: str, value: str) -> None:
     """Run `<name> config set <key> <value>` (Hermes' per-profile CLI shim)."""
     subprocess.run([_resolve(name), "config", "set", key, value], check=True)
+
+
+def get_default_config(key: str) -> str | None:
+    """Read a config value from the DEFAULT Hermes profile via `hermes config get`.
+    Returns None if the key is unset or the command fails."""
+    result = subprocess.run(
+        [_resolve(_HERMES_BIN), "config", "get", key],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    # `hermes config get` for an unset key typically prints empty or a placeholder
+    return value or None
+
+
+# Model-level config keys that define which LLM the agent calls. Copied wholesale
+# from the default profile into new profiles when authMethod=inherit.
+_INHERITED_MODEL_KEYS = ("model.default", "model.provider", "model.base_url")
+
+
+def inherit_model_config(name: str) -> dict[str, str]:
+    """Copy the default profile's model.* config keys into the named profile.
+    Used when the new agent should "use existing credentials" — Hermes treats
+    each profile's model config independently, so without this the new profile
+    has no provider and errors with 'No inference provider configured' on the
+    first chat. Returns the dict of keys that were applied for logging."""
+    applied: dict[str, str] = {}
+    for key in _INHERITED_MODEL_KEYS:
+        value = get_default_config(key)
+        if value:
+            set_config(name, key, value)
+            applied[key] = value
+    return applied

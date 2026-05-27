@@ -19,5 +19,14 @@ SHIM
   "profile delete")
     rm -rf "${HERMES_PROFILES_DIR:?}/$3"
     ;;
+  "config get")
+    # Mock the DEFAULT profile's model.* values so `inherit_model_config`
+    # has something to read. Tests can override via FAKE_DEFAULT_<key> env.
+    case "$3" in
+      "model.default")  echo "${FAKE_DEFAULT_MODEL:-gpt-5.5}" ;;
+      "model.provider") echo "${FAKE_DEFAULT_PROVIDER:-openai-codex}" ;;
+      "model.base_url") echo "${FAKE_DEFAULT_BASE_URL:-https://chatgpt.com/backend-api/codex}" ;;
+    esac
+    ;;
 esac
 exit 0

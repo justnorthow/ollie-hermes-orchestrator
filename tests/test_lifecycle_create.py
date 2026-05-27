@@ -39,7 +39,7 @@ async def test_create_agent_inherit_skips_provider_creds(fake_env):
         name="codex-agent",
         display_name=None, color=None,
         provider="anthropic",
-        model="claude-sonnet-4.6",
+        model="",  # inherit path — no model specified by user
         api_key=None,
         system_prompt=None, enabled_skills=[],
         api_server_key="shared",
@@ -50,6 +50,36 @@ async def test_create_agent_inherit_skips_provider_creds(fake_env):
     profile_env = (fake_env["profiles"] / "codex-agent" / ".env").read_text()
     assert "ANTHROPIC_API_KEY" not in profile_env
     assert "API_SERVER_PORT=" in profile_env  # API_SERVER_* still written
+
+
+@pytest.mark.asyncio
+async def test_create_agent_inherit_copies_model_config_from_default(fake_env):
+    """auth_method='inherit' must copy model.default/provider/base_url from the
+    default profile so Hermes has a provider configured for the new agent."""
+    req = CreateRequest(
+        name="codex-agent",
+        display_name=None, color=None,
+        provider="anthropic",
+        model="",
+        api_key=None,
+        system_prompt=None, enabled_skills=[],
+        api_server_key="shared",
+        auth_method="inherit",
+    )
+    events = [ev async for ev in create_agent(req)]
+    assert events[-1].get("event") == "done"
+    # apply_config event should report which keys were inherited
+    apply = next(ev for ev in events if ev.get("step") == "apply_config")
+    assert "model.default" in apply.get("inherited", [])
+    assert "model.provider" in apply.get("inherited", [])
+    # the new profile's CLI shim should have received `config set model.default <value>`
+    hermes_log = (fake_env["logs"] / "hermes.log").read_text()
+    assert "config set model.default gpt-5.5" in hermes_log
+    assert "config set model.provider openai-codex" in hermes_log
+    # AGENTS_JSON entry shows the inherited model name (not "unknown")
+    from src.agents_json import read_agents
+    entry = next(e for e in read_agents(fake_env["stack"] / ".env") if e.id == "codex-agent")
+    assert entry.model == "gpt-5.5"
 
 
 @pytest.mark.asyncio

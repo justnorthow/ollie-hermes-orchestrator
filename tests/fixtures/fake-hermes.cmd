@@ -12,4 +12,9 @@ if "%1 %2"=="profile create" (
 if "%1 %2"=="profile delete" (
     if exist "%HERMES_PROFILES_DIR%\%3" rmdir /s /q "%HERMES_PROFILES_DIR%\%3"
 )
+if "%1 %2"=="config get" (
+    if "%3"=="model.default"  echo gpt-5.5
+    if "%3"=="model.provider" echo openai-codex
+    if "%3"=="model.base_url" echo https://chatgpt.com/backend-api/codex
+)
 exit /b 0

@@ -9,7 +9,10 @@ from src.docker_ops import bounce_dashboard
 from src.lock import file_lock
 from src.models import Agent
 from src.ports import allocate_ports
-from src.profile_ops import create_profile, delete_profile, write_profile_env, set_config
+from src.profile_ops import (
+    create_profile, delete_profile, write_profile_env, set_config,
+    inherit_model_config,
+)
 from src.systemd_ops import install_gateway_service, install_dashboard_service, \
     stop_and_remove_service
 
@@ -100,14 +103,21 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
             completed_steps.append("write_profile_env")
 
             # 5. apply per-profile config
-            # Model is optional when inheriting host credentials — Hermes uses
-            # its own default in that case. Only call set_config if user picked one.
-            if req.model:
-                set_config(req.name, "model", req.model)
+            inherited: dict[str, str] = {}
+            if req.auth_method == "inherit":
+                # Copy model.default / model.provider / model.base_url from the
+                # DEFAULT profile so the new agent points at the same LLM the
+                # user is already authenticated with (OpenAI Codex OAuth,
+                # OpenRouter, etc.). Without this the new profile has no
+                # provider configured and errors on first chat.
+                inherited = inherit_model_config(req.name)
+            elif req.model:
+                # api_key path: user picked a model explicitly.
+                set_config(req.name, "model.default", req.model)
             set_config(req.name, "gateway.port", str(ports.gateway))
             if req.system_prompt:
                 set_config(req.name, "system_prompt", req.system_prompt)
-            yield _ev("apply_config")
+            yield _ev("apply_config", inherited=list(inherited.keys()))
             completed_steps.append("apply_config")
 
             # 6. install gateway service
@@ -122,13 +132,16 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
 
             # 8. update AGENTS_JSON
             color = req.color or _pick_color([e.color for e in existing])
+            # On inherit, surface the model.default we copied from the default
+            # profile so the UI shows a meaningful name instead of "unknown".
+            displayed_model = req.model or inherited.get("model.default") or ""
             entry = AgentEntry(
                 id=req.name,
                 name=req.display_name or req.name.capitalize(),
                 gateway_port=ports.gateway,
                 dashboard_port=ports.dashboard,
                 color=color,
-                model=req.model,
+                model=displayed_model,
             )
             write_agent(env_path, entry)
             yield _ev("update_agents_json")
