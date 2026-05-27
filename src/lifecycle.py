@@ -134,8 +134,12 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
             yield _ev("update_agents_json")
             completed_steps.append("update_agents_json")
 
-            # 9. bounce dashboard container
-            bounce_dashboard()
+            # 9. UX-level "bounce_dashboard" step — we emit the event now (so
+            # the progress UI shows it ticking) but defer the ACTUAL bounce
+            # until after we yield "done". The dashboard container houses
+            # the nginx proxying this SSE stream; bouncing it before "done"
+            # tears down the connection and the browser never learns the
+            # create succeeded, leading to a confused user-retry.
             yield _ev("bounce_dashboard")
             completed_steps.append("bounce_dashboard")
 
@@ -153,6 +157,17 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
             )
             yield {"event": "done", "agent": agent.model_dump(),
                    "duration_ms": int((time.monotonic() - started) * 1000)}
+
+            # 11. actually bounce dashboard now that the SSE response has
+            # delivered "done". Browser closes the modal as it processes
+            # "done"; the nginx restart on the tail of this response is
+            # fine because the client doesn't need any more events.
+            # Wrapped in try/except: a bounce failure doesn't undo a
+            # successful create. Operator can re-bounce manually if needed.
+            try:
+                bounce_dashboard()
+            except Exception:
+                _logger.warning("bounce_dashboard failed after successful create", exc_info=True)
 
         except Exception as exc:
             _logger.exception("create_agent failed at step=%s",
