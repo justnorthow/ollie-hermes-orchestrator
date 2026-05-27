@@ -208,8 +208,11 @@ async def delete_agent(agent_id: str) -> dict:
     env_path = cfg.hermes_stack_dir / ".env"
     with file_lock(cfg.hermes_stack_dir / ".agents.lock"):
         existing = read_agents(env_path)
+        # Idempotent: a delete for an already-gone agent is a no-op success,
+        # not a 404. The caller asked us to ensure the agent doesn't exist —
+        # if it already doesn't, we've fulfilled the request.
         if not any(e.id == agent_id for e in existing):
-            return {"ok": False, "error": "not_found"}
+            return {"ok": True, "already_gone": True}
         # tear down in reverse-create order
         try:
             stop_and_remove_service(f"hermes-dashboard-{agent_id}")

@@ -26,10 +26,24 @@ async def test_delete_agent_removes_all_artifacts(fake_env):
 
 
 @pytest.mark.asyncio
-async def test_delete_unknown_agent_returns_not_found(fake_env):
+async def test_delete_unknown_agent_is_idempotent(fake_env):
+    """A delete for an agent that doesn't exist is a no-op success, not an
+    error. The caller asked us to ensure the agent is gone — if it already
+    is, the request is satisfied. Prevents 404s from double-click races."""
     result = await delete_agent("ghost")
-    assert result["ok"] is False
-    assert result["error"] == "not_found"
+    assert result["ok"] is True
+    assert result.get("already_gone") is True
+
+
+@pytest.mark.asyncio
+async def test_delete_twice_succeeds_both_times(fake_env):
+    """Double-click race: two DELETEs land in succession. Both must succeed."""
+    await _create("paige")
+    first = await delete_agent("paige")
+    second = await delete_agent("paige")
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second.get("already_gone") is True
 
 
 @pytest.mark.asyncio
