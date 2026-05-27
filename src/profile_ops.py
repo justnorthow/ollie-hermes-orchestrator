@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from src.config import Config
 
@@ -71,17 +72,28 @@ def set_config(name: str, key: str, value: str) -> None:
 
 
 def get_default_config(key: str) -> str | None:
-    """Read a config value from the DEFAULT Hermes profile via `hermes config get`.
-    Returns None if the key is unset or the command fails."""
-    result = subprocess.run(
-        [_resolve(_HERMES_BIN), "config", "get", key],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
+    """Read a dotted-path value from the DEFAULT Hermes profile's config.yaml.
+    Hermes itself has no `config get` subcommand (only show/set/path), so we
+    parse the YAML directly. Returns None if the key is unset or the file is
+    missing/unreadable."""
+    config_path = Path(os.environ.get("HOME", os.path.expanduser("~"))) / ".hermes" / "config.yaml"
+    if not config_path.is_file():
         return None
-    value = result.stdout.strip()
-    # `hermes config get` for an unset key typically prints empty or a placeholder
-    return value or None
+    try:
+        import yaml
+        with open(config_path) as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return None
+    # Walk the dotted path
+    node = data
+    for part in key.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+        if node is None:
+            return None
+    return str(node) if node != "" else None
 
 
 # Model-level config keys that define which LLM the agent calls. Copied wholesale

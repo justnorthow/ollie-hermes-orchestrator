@@ -15,6 +15,13 @@ def fake_env(monkeypatch, tmp_path):
     home.mkdir()
     profiles = home / ".hermes" / "profiles"
     profiles.mkdir(parents=True)
+    # Default profile config — what inherit_model_config reads to copy into new profiles
+    (home / ".hermes" / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.5\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
     systemd = home / ".config" / "systemd" / "user"
     systemd.mkdir(parents=True)
     stack = home / "hermes-stack"
