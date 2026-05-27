@@ -24,8 +24,10 @@ class CreateAgent(BaseModel):
     name: str
     displayName: Optional[str] = None
     color: Optional[str] = None
-    provider: str
-    model: str
+    provider: str = ""
+    # Model is required for the api_key path (Hermes needs to know what to call).
+    # Optional for the inherit path — host credentials determine the model implicitly.
+    model: str = ""
     # `authMethod` selects how the new profile authenticates with the LLM provider.
     #   "api_key"  — orchestrator writes the supplied apiKey into the profile's .env (default).
     #   "inherit"  — skip writing provider creds; Hermes inherits whatever the host has
@@ -43,9 +45,11 @@ class CreateAgent(BaseModel):
 
     @model_validator(mode="after")
     def _validate_credentials(self) -> "CreateAgent":
-        # api_key auth requires a non-empty key; inherit auth must have no key (defense-in-depth)
-        if self.authMethod == "api_key" and not (self.apiKey or "").strip():
-            raise ValueError("apiKey is required when authMethod is 'api_key'")
+        if self.authMethod == "api_key":
+            if not (self.apiKey or "").strip():
+                raise ValueError("apiKey is required when authMethod is 'api_key'")
+            if not self.model.strip():
+                raise ValueError("model is required when authMethod is 'api_key'")
         return self
 
 

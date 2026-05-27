@@ -100,7 +100,10 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
             completed_steps.append("write_profile_env")
 
             # 5. apply per-profile config
-            set_config(req.name, "model", req.model)
+            # Model is optional when inheriting host credentials — Hermes uses
+            # its own default in that case. Only call set_config if user picked one.
+            if req.model:
+                set_config(req.name, "model", req.model)
             set_config(req.name, "gateway.port", str(ports.gateway))
             if req.system_prompt:
                 set_config(req.name, "system_prompt", req.system_prompt)
