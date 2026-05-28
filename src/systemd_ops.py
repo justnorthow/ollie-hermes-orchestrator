@@ -15,8 +15,13 @@ After=network.target
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/.local/bin/hermes -p {name} dashboard --host 0.0.0.0 --port {port} --insecure --no-open
-Restart=on-failure
+# Restart=always (not on-failure) so the dashboard comes back even when
+# `hermes update` SIGTERMs it (which is a clean exit, status 0).
+Restart=always
 RestartSec=5
+# Cap restart attempts so a genuinely broken dashboard doesn't loop forever.
+StartLimitBurst=10
+StartLimitIntervalSec=60
 
 [Install]
 WantedBy=default.target
