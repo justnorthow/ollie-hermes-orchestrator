@@ -72,3 +72,9 @@ class Agent(BaseModel):
     dashboardPort: int
     systemPrompt: Optional[str] = None
     enabledSkills: list[str] = Field(default_factory=list)
+    needsIdentity: bool = False
+
+
+class SetIdentityRequest(BaseModel):
+    displayName: str
+    soulContent: str
