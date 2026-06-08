@@ -8,6 +8,7 @@ from src.config import Config
 from src.identity import resolve_soul_path, soul_needs_identity, write_soul
 from src.lifecycle import CreateRequest, UpdateRequest, create_agent, delete_agent, update_agent
 from src.models import Agent, CreateAgent, SetIdentityRequest, UpdateAgent
+from src.persona_polish import polish_persona
 from src.sse import sse_event
 
 _logger = logging.getLogger(__name__)
@@ -106,9 +107,17 @@ async def set_identity(agent_id: str, body: SetIdentityRequest, request: Request
     entry = next((e for e in entries if e.id == agent_id), None)
     if entry is None:
         raise HTTPException(status_code=404, detail="agent not found")
+    # Optionally polish the soul content via the agent's gateway (falls back to template)
+    gateway_key = request.app.state.hermes_gateway_key
+    gateway_port = entry.gateway_port
+    final_soul = (
+        polish_persona(body.soulContent, gateway_port, gateway_key)
+        if gateway_key
+        else body.soulContent
+    )
     # Write SOUL atomically
     soul_path = resolve_soul_path(agent_id, cfg.hermes_home, cfg.hermes_profiles_dir)
-    write_soul(soul_path, body.soulContent)
+    write_soul(soul_path, final_soul)
     # Update displayName via existing rename path
     req = UpdateRequest(displayName=body.displayName, restart=False)
     await update_agent(agent_id, req)
