@@ -38,6 +38,7 @@ def fake_env(monkeypatch, tmp_path):
         dest.chmod(0o755)
 
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
     monkeypatch.setenv("HERMES_PROFILES_DIR", str(profiles))
     monkeypatch.setenv("SYSTEMD_USER_DIR", str(systemd))
     monkeypatch.setenv("HERMES_STACK_DIR", str(stack))
@@ -53,6 +54,7 @@ def fake_env(monkeypatch, tmp_path):
 
     return {
         "home": home,
+        "hermes_home": home / ".hermes",
         "profiles": profiles,
         "systemd": systemd,
         "stack": stack,

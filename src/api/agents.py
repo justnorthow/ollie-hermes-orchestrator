@@ -5,8 +5,9 @@ from src.agents_json import read_agents
 from src.auth import require_bearer
 from src.audit import audit
 from src.config import Config
+from src.identity import resolve_soul_path, soul_needs_identity, write_soul
 from src.lifecycle import CreateRequest, UpdateRequest, create_agent, delete_agent, update_agent
-from src.models import Agent, CreateAgent, UpdateAgent
+from src.models import Agent, CreateAgent, SetIdentityRequest, UpdateAgent
 from src.sse import sse_event
 
 _logger = logging.getLogger(__name__)
@@ -14,11 +15,16 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/agents", tags=["agents"], dependencies=[Depends(require_bearer)])
 
 
-def _entry_to_agent(e) -> dict:
+def _entry_to_agent(e, cfg: Config | None = None) -> dict:
+    needs_identity = False
+    if cfg is not None:
+        soul_path = resolve_soul_path(e.id, cfg.hermes_home, cfg.hermes_profiles_dir)
+        needs_identity = soul_needs_identity(soul_path)
     return Agent(
         id=e.id, displayName=e.name, color=e.color,
         provider="anthropic", model=e.model or "unknown",
         gatewayPort=e.gateway_port, dashboardPort=e.dashboard_port,
+        needsIdentity=needs_identity,
     ).model_dump()
 
 
@@ -26,7 +32,7 @@ def _entry_to_agent(e) -> dict:
 async def list_agents(request: Request) -> dict:
     cfg = request.app.state.config
     entries = read_agents(cfg.hermes_stack_dir / ".env")
-    return {"agents": [_entry_to_agent(e) for e in entries]}
+    return {"agents": [_entry_to_agent(e, cfg) for e in entries]}
 
 
 @router.get("/{agent_id}")
@@ -36,7 +42,7 @@ async def get_agent(agent_id: str, request: Request) -> dict:
     e = next((x for x in entries if x.id == agent_id), None)
     if not e:
         raise HTTPException(status_code=404, detail="not_found")
-    return _entry_to_agent(e)
+    return _entry_to_agent(e, cfg)
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -87,6 +93,28 @@ async def delete(agent_id: str, request: Request):
         raise HTTPException(status_code=404 if result.get("error") == "not_found" else 400,
                             detail=result.get("error"))
     return None
+
+
+@router.post("/{agent_id}/identity")
+async def set_identity(agent_id: str, body: SetIdentityRequest, request: Request) -> dict:
+    if not body.soulContent.strip():
+        raise HTTPException(status_code=400, detail="soulContent must be non-empty")
+    cfg = request.app.state.config
+    actor_ip = request.client.host if request.client else "unknown"
+    # Verify the agent exists (404 if unknown)
+    entries = read_agents(cfg.hermes_stack_dir / ".env")
+    entry = next((e for e in entries if e.id == agent_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    # Write SOUL atomically
+    soul_path = resolve_soul_path(agent_id, cfg.hermes_home, cfg.hermes_profiles_dir)
+    write_soul(soul_path, body.soulContent)
+    # Update displayName via existing rename path
+    req = UpdateRequest(displayName=body.displayName, restart=False)
+    await update_agent(agent_id, req)
+    audit(cfg.audit_log_path, op="set_identity", agent_id=agent_id,
+          actor_ip=actor_ip, result="ok", duration_ms=0)
+    return await get_agent(agent_id, request)
 
 
 @router.patch("/{agent_id}")

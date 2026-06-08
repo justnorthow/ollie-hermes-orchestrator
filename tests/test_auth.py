@@ -11,6 +11,7 @@ def app(monkeypatch, tmp_path):
     cfg = Config(
         orchestrator_key="topsecret",
         hermes_stack_dir=tmp_path / "stack",
+        hermes_home=tmp_path / ".hermes",
         hermes_profiles_dir=tmp_path / "profiles",
         systemd_user_dir=tmp_path / "systemd",
         audit_log_path=tmp_path / "audit.log",
