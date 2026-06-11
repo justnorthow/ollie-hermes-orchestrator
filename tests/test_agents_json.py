@@ -50,6 +50,31 @@ def test_write_agent_is_atomic_under_failure(tmp_path, monkeypatch):
     assert env.read_text() == orig
 
 
+def test_write_agent_handles_non_ascii_name(tmp_path):
+    """json.dumps emits \\uXXXX escapes for non-ASCII names; feeding that to
+    re.sub as a raw replacement raised 'bad escape \\u'. Must round-trip."""
+    env = tmp_path / ".env"
+    _write_env(env, 'HERMES_GATEWAY_KEY=k\nAGENTS_JSON=[]\n')
+    write_agent(env, AgentEntry(
+        id="cafe", name="Café", gateway_port=8643, dashboard_port=9121, color="#abc",
+    ))
+    assert "HERMES_GATEWAY_KEY=k" in env.read_text()
+    entries = read_agents(env)
+    assert entries[0].name == "Café"
+
+
+def test_write_agent_roundtrips_backslash_in_name(tmp_path):
+    """A literal backslash in a name must survive; re.sub replacement-escape
+    processing previously mangled it."""
+    env = tmp_path / ".env"
+    _write_env(env, 'AGENTS_JSON=[]\n')
+    write_agent(env, AgentEntry(
+        id="x", name=r"a\b", gateway_port=8643, dashboard_port=9121, color="#abc",
+    ))
+    entries = read_agents(env)
+    assert entries[0].name == r"a\b"
+
+
 def test_remove_agent_drops_entry(tmp_path):
     env = tmp_path / ".env"
     _write_env(env, 'AGENTS_JSON=[{"id":"a","name":"A","gatewayUrl":"http://host.docker.internal:8643","dashboardUrl":"http://host.docker.internal:9121"},{"id":"b","name":"B","gatewayUrl":"http://host.docker.internal:8644","dashboardUrl":"http://host.docker.internal:9122"}]\n')

@@ -78,7 +78,11 @@ def _replace_agents_line(env_text: str, entries: list[AgentEntry]) -> str:
     new_value = json.dumps([_entry_to_json(e) for e in entries], separators=(",", ":"))
     new_line = f"AGENTS_JSON={new_value}"
     if _AGENTS_LINE.search(env_text):
-        return _AGENTS_LINE.sub(new_line, env_text)
+        # Pass a replacement FUNCTION, not the string: re.sub interprets
+        # backslash escapes (\uXXXX from non-ASCII names, \\ from literal
+        # backslashes) in a string replacement, raising "bad escape \u" or
+        # corrupting the value. A function return is used verbatim.
+        return _AGENTS_LINE.sub(lambda _m: new_line, env_text)
     sep = "" if env_text.endswith("\n") or not env_text else "\n"
     return f"{env_text}{sep}{new_line}\n"
 
