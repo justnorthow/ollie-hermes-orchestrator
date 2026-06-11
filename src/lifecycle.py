@@ -6,12 +6,12 @@ from typing import AsyncIterator, Optional
 from src.agents_json import AgentEntry, read_agents, write_agent, remove_agent
 from src.config import Config
 from src.docker_ops import bounce_dashboard
-from src.lock import file_lock
+from src.lock import async_file_lock
 from src.models import Agent
 from src.ports import allocate_ports
 from src.profile_ops import (
     create_profile, delete_profile, write_profile_env, set_config,
-    inherit_model_config,
+    inherit_model_config, read_profile_env,
 )
 from src.systemd_ops import install_gateway_service, install_dashboard_service, \
     stop_and_remove_service
@@ -60,7 +60,7 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
     def _ev(step: str, **extras) -> dict:
         return {"step": step, "ok": True, **extras}
 
-    with file_lock(cfg.hermes_stack_dir / ".agents.lock"):
+    async with async_file_lock(cfg.hermes_stack_dir / ".agents.lock"):
         try:
             # 1. validate
             existing = read_agents(env_path)
@@ -234,7 +234,7 @@ async def delete_agent(agent_id: str) -> dict:
         return {"ok": False, "error": "agent_id is reserved (default profile)"}
     cfg = Config.load()
     env_path = cfg.hermes_stack_dir / ".env"
-    with file_lock(cfg.hermes_stack_dir / ".agents.lock"):
+    async with async_file_lock(cfg.hermes_stack_dir / ".agents.lock"):
         existing = read_agents(env_path)
         # Idempotent: a delete for an already-gone agent is a no-op success,
         # not a 404. The caller asked us to ensure the agent doesn't exist —
@@ -268,7 +268,7 @@ async def delete_agent(agent_id: str) -> dict:
 async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
     cfg = Config.load()
     env_path = cfg.hermes_stack_dir / ".env"
-    with file_lock(cfg.hermes_stack_dir / ".agents.lock"):
+    async with async_file_lock(cfg.hermes_stack_dir / ".agents.lock"):
         existing = read_agents(env_path)
         entry = next((e for e in existing if e.id == agent_id), None)
         if entry is None:
@@ -280,16 +280,30 @@ async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
 
         # Apply profile-config changes
         if req.model is not None:
-            set_config(agent_id, "model", req.model)
+            # Must match create_agent ("model.default") and the Hermes config
+            # schema; writing top-level "model" leaves the gateway on the old
+            # model while the UI shows the new one.
+            set_config(agent_id, "model.default", req.model)
         if req.systemPrompt is not None:
             set_config(agent_id, "system_prompt", req.systemPrompt)
         if req.apiKey is not None:
-            provider_var = "ANTHROPIC_API_KEY"  # TODO: read existing provider
+            # write_profile_env rewrites the whole .env, so read the existing
+            # one first to preserve the real shared API_SERVER_KEY (clobbering
+            # it with "shared" 401s every request after the restart) and to
+            # detect the profile's actual provider var instead of assuming
+            # Anthropic.
+            existing_env = read_profile_env(agent_id)
+            provider_var = next(
+                (v for v in _PROVIDER_ENV_VAR.values() if v in existing_env),
+                "ANTHROPIC_API_KEY",
+            )
             write_profile_env(
                 agent_id,
                 provider_creds={provider_var: req.apiKey},
                 api_server_port=entry.gateway_port,
-                api_server_key="shared",
+                api_server_key=existing_env.get("API_SERVER_KEY", "shared"),
+                api_server_host=existing_env.get("API_SERVER_HOST", "0.0.0.0"),
+                api_server_cors=existing_env.get("API_SERVER_CORS_ORIGINS", "*"),
             )
 
         # Apply AGENTS_JSON changes

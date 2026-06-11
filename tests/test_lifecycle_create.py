@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from src.lifecycle import create_agent, CreateRequest
 
@@ -29,6 +30,31 @@ async def test_create_agent_happy_path_emits_all_steps(fake_env):
     assert final.get("event") == "done"
     assert final["agent"]["id"] == "paige"
     assert (fake_env["profiles"] / "paige").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_creates_both_complete(fake_env):
+    """Two creates issued concurrently must serialize on the lock and both
+    finish — the lock must not be acquired in a way that deadlocks the loop."""
+    def _req(name):
+        return CreateRequest(
+            name=name, display_name=name, color=None, provider="anthropic",
+            model="m", api_key="k", system_prompt=None, enabled_skills=[],
+            api_server_key="shared",
+        )
+
+    async def run(name):
+        return [ev async for ev in create_agent(_req(name))]
+
+    a, b = await asyncio.wait_for(
+        asyncio.gather(run("alpha"), run("beta")), timeout=15,
+    )
+    assert any(ev.get("event") == "done" for ev in a)
+    assert any(ev.get("event") == "done" for ev in b)
+
+    from src.agents_json import read_agents
+    ids = {e.id for e in read_agents(fake_env["stack"] / ".env")}
+    assert {"alpha", "beta"} <= ids
 
 
 @pytest.mark.asyncio

@@ -66,6 +66,25 @@ def write_profile_env(
         os.chmod(path, 0o600)
 
 
+def read_profile_env(name: str) -> dict[str, str]:
+    """Parse a profile's .env into a dict. Returns {} if the file is missing.
+
+    Used on update to preserve fields write_profile_env would otherwise
+    overwrite (API_SERVER_KEY, host, CORS) and to detect which provider env
+    var the profile already uses."""
+    path = _profiles_dir() / name / ".env"
+    result: dict[str, str] = {}
+    if not path.is_file():
+        return result
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        result[k.strip()] = v.strip()
+    return result
+
+
 def set_config(name: str, key: str, value: str) -> None:
     """Run `<name> config set <key> <value>` (Hermes' per-profile CLI shim)."""
     subprocess.run([_resolve(name), "config", "set", key, value], check=True)
