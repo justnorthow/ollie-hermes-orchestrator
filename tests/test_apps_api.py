@@ -102,3 +102,17 @@ def test_delete_nonexistent_returns_404(client):
 def test_unknown_agent_returns_404(client):
     r = client.get("/v1/agents/no-such-agent/apps")
     assert r.status_code == 404
+
+
+def test_register_empty_id_returns_400(client):
+    r = client.post("/v1/agents/marketing-expert/apps", json={
+        "id": "", "label": "Dashboard", "icon": "", "description": "", "componentType": "X",
+    })
+    assert r.status_code == 400
+
+
+def test_register_empty_label_returns_400(client):
+    r = client.post("/v1/agents/marketing-expert/apps", json={
+        "id": "my-app", "label": "", "icon": "", "description": "", "componentType": "X",
+    })
+    assert r.status_code == 400

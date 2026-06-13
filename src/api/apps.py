@@ -55,6 +55,12 @@ async def list_apps(agent_id: str, request: Request) -> dict:
 async def register_app(agent_id: str, body: CreateApp, request: Request) -> dict:
     cfg = request.app.state.config
     _require_agent(agent_id, cfg)
+    if not body.id.strip():
+        raise HTTPException(status_code=400, detail="id must be non-empty")
+    if not body.label.strip():
+        raise HTTPException(status_code=400, detail="label must be non-empty")
+    if not body.componentType.strip():
+        raise HTTPException(status_code=400, detail="componentType must be non-empty")
     apps = _read_apps(agent_id, cfg)
     app_dict = {**body.model_dump(), "agentId": agent_id}
     # Upsert: replace existing entry with the same id
