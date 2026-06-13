@@ -78,3 +78,24 @@ class Agent(BaseModel):
 class SetIdentityRequest(BaseModel):
     displayName: str
     soulContent: str
+
+
+class App(BaseModel):
+    id: str
+    agentId: str
+    label: str
+    icon: str
+    description: str
+    componentType: str
+    config: dict = Field(default_factory=dict)
+    order: int = 0
+
+
+class CreateApp(BaseModel):
+    id: str
+    label: str
+    icon: str
+    description: str
+    componentType: str
+    config: dict = Field(default_factory=dict)
+    order: int = 0
