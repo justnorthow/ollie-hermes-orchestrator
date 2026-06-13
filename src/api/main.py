@@ -5,6 +5,7 @@ from src.config import Config
 from src.rate_limit import TokenBucket
 from src.api import agents as agents_router
 from src.api import catalog as catalog_router
+from src.api import apps as apps_router
 
 _logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ def create_app() -> FastAPI:
 
     app.include_router(agents_router.router)
     app.include_router(catalog_router.router)
+    app.include_router(apps_router.router)
     return app
 
 
