@@ -80,17 +80,6 @@ class SetIdentityRequest(BaseModel):
     soulContent: str
 
 
-class App(BaseModel):
-    id: str
-    agentId: str
-    label: str
-    icon: str
-    description: str
-    componentType: str
-    config: dict = Field(default_factory=dict)
-    order: int = 0
-
-
 class CreateApp(BaseModel):
     id: str
     label: str
@@ -106,6 +95,13 @@ class Folder(BaseModel):
     name: str
     order: int = 0
     appIds: list[str] = Field(default_factory=list)
+
+    @field_validator("id", "name")
+    @classmethod
+    def _non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must be non-empty and not blank")
+        return v
 
 
 class FoldersPayload(BaseModel):

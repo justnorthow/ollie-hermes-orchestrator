@@ -1,11 +1,14 @@
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from src.agents_json import read_agents
 from src.auth import require_bearer
 from src.config import Config
+from src.lock import file_lock
 from src.models import CreateApp
 
 _logger = logging.getLogger(__name__)
@@ -15,6 +18,8 @@ router = APIRouter(
     tags=["apps"],
     dependencies=[Depends(require_bearer)],
 )
+
+_APPS_LOCK = "apps.lock"
 
 
 def _apps_path(agent_id: str, cfg: Config) -> Path:
@@ -26,7 +31,9 @@ def _read_apps(agent_id: str, cfg: Config) -> list[dict]:
     if not path.exists():
         return []
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
+        # Guard against corrupt/unexpected non-list content (e.g. `{}`)
+        return data if isinstance(data, list) else []
     except (json.JSONDecodeError, OSError):
         _logger.warning("apps.json unreadable for %s, returning empty list", agent_id)
         return []
@@ -35,7 +42,20 @@ def _read_apps(agent_id: str, cfg: Config) -> list[dict]:
 def _write_apps(agent_id: str, cfg: Config, apps: list[dict]) -> None:
     path = _apps_path(agent_id, cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(apps, indent=2))
+    lock_path = path.parent / _APPS_LOCK
+    text = json.dumps(apps, indent=2)
+    with file_lock(lock_path):
+        fd, tmp = tempfile.mkstemp(prefix=".apps.", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def _require_agent(agent_id: str, cfg: Config) -> None:
