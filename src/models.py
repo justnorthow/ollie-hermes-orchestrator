@@ -99,3 +99,14 @@ class CreateApp(BaseModel):
     componentType: str
     config: dict = Field(default_factory=dict)
     order: int = 0
+
+
+class Folder(BaseModel):
+    id: str
+    name: str
+    order: int = 0
+    appIds: list[str] = Field(default_factory=list)
+
+
+class FoldersPayload(BaseModel):
+    folders: list[Folder] = Field(default_factory=list)
