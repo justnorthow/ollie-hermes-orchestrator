@@ -30,6 +30,13 @@ def hia_token():
 
 @router.get("/v1/sso/app-token")
 def app_token(request: Request):
+    # SECURITY: X-Auth-Email / X-Auth-Role are TRUSTED here ONLY because the dashboard's
+    # nginx (SP1-B) sets them from its auth_request validator (/v1/auth/validate) AND
+    # strips any client-supplied X-Auth-* inbound. If that upstream strip is ever
+    # missing, a browser could forge these headers and mint a token for any
+    # identity/role. SP1-B's nginx gate MUST strip inbound X-Auth-* and inject them from
+    # auth_request — a hard acceptance criterion for that sub-project. Do not deploy this
+    # endpoint to the box ahead of that gate.
     secret = os.environ.get("HIA_SSO_SECRET", "").strip()
     if not secret:
         raise HTTPException(status_code=503, detail="App SSO not configured")
