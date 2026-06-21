@@ -8,6 +8,7 @@ from src.api import catalog as catalog_router
 from src.api import apps as apps_router
 from src.api import folders as folders_router
 from src.api import sso as sso_router
+from src.api.auth_validate import router as auth_validate_router
 
 _logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(apps_router.router)
     app.include_router(folders_router.router)
     app.include_router(sso_router.router)
+    app.include_router(auth_validate_router)
     return app
 
 
