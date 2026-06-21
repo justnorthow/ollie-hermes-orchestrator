@@ -53,8 +53,12 @@ def _access_token_from_cookie(raw: str | None) -> str | None:
     if not raw:
         return None
     if raw.startswith("base64-"):
+        # @supabase/ssr encodes the value with base64URL (stringToBase64URL),
+        # not standard base64 — normalize -/_ to +/ and pad before decoding.
         try:
-            raw = base64.b64decode(raw[len("base64-"):] + "===").decode("utf-8")
+            payload = raw[len("base64-"):].replace("-", "+").replace("_", "/")
+            payload += "=" * (-len(payload) % 4)
+            raw = base64.b64decode(payload).decode("utf-8")
         except Exception:
             return None
     try:

@@ -31,13 +31,13 @@ def _make_cookie_value(email="a@b.com", role="agent", exp_delta=60, secret=SECRE
         payload["iss"] = issuer
     access = jwt.encode(payload, secret, algorithm="HS256")
     session = json.dumps({"access_token": access, "token_type": "bearer"})
-    return "base64-" + base64.b64encode(session.encode()).decode()
+    return "base64-" + base64.urlsafe_b64encode(session.encode()).rstrip(b"=").decode()
 
 
 def _wrap_token(token: str) -> str:
     """Wrap a raw JWT string in the @supabase/ssr cookie envelope."""
     session = json.dumps({"access_token": token, "token_type": "bearer"})
-    return "base64-" + base64.b64encode(session.encode()).decode()
+    return "base64-" + base64.urlsafe_b64encode(session.encode()).rstrip(b"=").decode()
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +90,8 @@ def test_missing_user_role_defaults_to_agent(client):
          "iat": now, "exp": now + 60},
         SECRET, algorithm="HS256",
     )
-    val = "base64-" + base64.b64encode(
-        json.dumps({"access_token": access}).encode()).decode()
+    val = "base64-" + base64.urlsafe_b64encode(
+        json.dumps({"access_token": access}).encode()).rstrip(b"=").decode()
     r = client.get("/v1/auth/validate", cookies={"sb-x-auth-token": val})
     assert r.status_code == 200
     assert r.headers["X-Auth-Role"] == "agent"
