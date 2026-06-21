@@ -28,7 +28,8 @@ def _get_jwks_client() -> PyJWKClient | None:
         return None
     jwks_uri = f"{url}/auth/v1/.well-known/jwks.json"
     if jwks_uri not in _jwks_client_cache:
-        _jwks_client_cache[jwks_uri] = PyJWKClient(jwks_uri)
+        # Fix #5: pin lifespan to 60 s so stale keys are refreshed promptly.
+        _jwks_client_cache[jwks_uri] = PyJWKClient(jwks_uri, lifespan=60)
     return _jwks_client_cache[jwks_uri]
 
 
@@ -82,7 +83,12 @@ def validate(request: Request) -> Response:
 
     alg = header.get("alg", "")
 
-    if alg in ("ES256", "RS256"):
+    # Fix #1: compute issuer once; used in both branches where SUPABASE_URL is set.
+    supabase_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    issuer = f"{supabase_url}/auth/v1" if supabase_url else None
+
+    # Fix #4: accept ES256 only (RS256 removed — unused surface).
+    if alg == "ES256":
         # Asymmetric path: verify via Supabase JWKS endpoint.
         # Routing on the unverified alg is safe because we only accept the
         # public key matched by `kid` from the JWKS — the shared HS256 secret
@@ -92,16 +98,25 @@ def validate(request: Request) -> Response:
             return JSONResponse({"detail": "Supabase JWKS not configured (SUPABASE_URL unset)"}, status_code=503)
         try:
             signing_key = client.get_signing_key_from_jwt(access_token)
+            decode_kwargs: dict = dict(
+                algorithms=["ES256"],
+                audience="authenticated",
+            )
+            # Fix #1: enforce issuer when SUPABASE_URL is set (it always is in
+            # this branch because _get_jwks_client() would have returned None).
+            if issuer:
+                decode_kwargs["issuer"] = issuer
             claims = jwt.decode(
                 access_token,
                 signing_key.key,
-                algorithms=[alg],
-                audience="authenticated",
+                **decode_kwargs,
             )
+        # Fix #2: network failure → 503, not 401 (must be caught BEFORE PyJWTError).
+        except jwt.exceptions.PyJWKClientConnectionError:
+            return JSONResponse({"detail": "JWKS endpoint unreachable"}, status_code=503)
         except jwt.PyJWTError:
             return Response(status_code=401)
         except Exception:
-            # JWKS fetch / network failure: deny rather than 500
             return Response(status_code=401)
 
     elif alg == "HS256":
@@ -110,12 +125,23 @@ def validate(request: Request) -> Response:
         if not secret:
             return JSONResponse({"detail": "Supabase auth not configured"}, status_code=503)
         try:
-            claims = jwt.decode(access_token, secret, algorithms=["HS256"], audience="authenticated")
+            decode_kwargs = dict(
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+            # Fix #1: enforce issuer only when SUPABASE_URL is set; pure-HS256
+            # installs (no SUPABASE_URL) skip issuer validation so they don't crash.
+            if issuer:
+                decode_kwargs["issuer"] = issuer
+            claims = jwt.decode(access_token, secret, **decode_kwargs)
         except jwt.PyJWTError:
+            return Response(status_code=401)
+        # Fix #3: non-PyJWT errors (e.g. malformed secret) → 401, not 500.
+        except Exception:
             return Response(status_code=401)
 
     else:
-        # Unknown or disallowed algorithm (including "none") → reject.
+        # Unknown or disallowed algorithm (including "none", "RS256") → reject.
         return Response(status_code=401)
 
     email = claims.get("email")

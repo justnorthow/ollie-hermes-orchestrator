@@ -14,18 +14,22 @@ from src.api.auth_validate import router as auth_validate_router
 from src.auth import require_bearer
 
 SECRET = "test-supabase-secret-32bytes-long!!"  # >=32 bytes to avoid InsecureKeyLengthWarning
+SUPABASE_URL = "https://fake.supabase.co"
+ISSUER = f"{SUPABASE_URL}/auth/v1"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _make_cookie_value(email="a@b.com", role="agent", exp_delta=60, secret=SECRET):
+def _make_cookie_value(email="a@b.com", role="agent", exp_delta=60, secret=SECRET,
+                       issuer=ISSUER):
+    """Build a base64-encoded @supabase/ssr cookie with a valid HS256 JWT inside."""
     now = int(time.time())
-    access = jwt.encode(
-        {"aud": "authenticated", "sub": "u-1", "email": email,
-         "user_role": role, "iat": now, "exp": now + exp_delta},
-        secret, algorithm="HS256",
-    )
+    payload: dict = {"aud": "authenticated", "sub": "u-1", "email": email,
+                     "user_role": role, "iat": now, "exp": now + exp_delta}
+    if issuer is not None:
+        payload["iss"] = issuer
+    access = jwt.encode(payload, secret, algorithm="HS256")
     session = json.dumps({"access_token": access, "token_type": "bearer"})
     return "base64-" + base64.b64encode(session.encode()).decode()
 
@@ -54,12 +58,13 @@ def ec_keypair():
 
 
 # ---------------------------------------------------------------------------
-# HS256 fixtures (existing tests unchanged, but using longer secret)
+# HS256 fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
     app = FastAPI()
     app.include_router(auth_validate_router)
     app.dependency_overrides[require_bearer] = lambda: None  # bypass bearer for unit tests
@@ -67,7 +72,7 @@ def client(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Existing HS256 tests (unchanged behaviour; secret updated to >=32 bytes)
+# Existing HS256 tests — updated to include correct `iss` claim
 # ---------------------------------------------------------------------------
 
 def test_valid_session_returns_email_and_role(client):
@@ -80,8 +85,11 @@ def test_valid_session_returns_email_and_role(client):
 
 def test_missing_user_role_defaults_to_agent(client):
     now = int(time.time())
-    access = jwt.encode({"aud": "authenticated", "email": "a@b.com",
-                         "iat": now, "exp": now + 60}, SECRET, algorithm="HS256")
+    access = jwt.encode(
+        {"aud": "authenticated", "iss": ISSUER, "email": "a@b.com",
+         "iat": now, "exp": now + 60},
+        SECRET, algorithm="HS256",
+    )
     val = "base64-" + base64.b64encode(
         json.dumps({"access_token": access}).encode()).decode()
     r = client.get("/v1/auth/validate", cookies={"sb-x-auth-token": val})
@@ -123,13 +131,13 @@ def test_unconfigured_secret_is_503(monkeypatch):
     app.dependency_overrides[require_bearer] = lambda: None
     # HS256 token but no secret configured and no SUPABASE_URL → 503
     # Must use a real HS256-shaped cookie so the alg-routing reaches the secret check.
-    val = _make_cookie_value()
+    val = _make_cookie_value(issuer=None)  # no SUPABASE_URL → no issuer enforced
     r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": val})
     assert r.status_code == 503
 
 
 # ---------------------------------------------------------------------------
-# ES256 / JWKS tests (new)
+# ES256 / JWKS tests
 # ---------------------------------------------------------------------------
 
 def _make_mock_jwks_client(public_key):
@@ -146,13 +154,13 @@ def test_es256_valid_token_returns_200(monkeypatch, ec_keypair):
     private_pem, public_key = ec_keypair
     now = int(time.time())
     token = jwt.encode(
-        {"aud": "authenticated", "sub": "u-2", "email": "es@example.com",
+        {"aud": "authenticated", "iss": ISSUER, "sub": "u-2", "email": "es@example.com",
          "user_role": "broker", "iat": now, "exp": now + 60},
         private_pem, algorithm="ES256", headers={"kid": "test-kid"},
     )
     cookie_val = _wrap_token(token)
 
-    monkeypatch.setenv("SUPABASE_URL", "https://fake.supabase.co")
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
     monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
 
     mock_client = _make_mock_jwks_client(public_key)
@@ -174,13 +182,13 @@ def test_es256_wrong_audience_is_401(monkeypatch, ec_keypair):
     private_pem, public_key = ec_keypair
     now = int(time.time())
     token = jwt.encode(
-        {"aud": "wrong-audience", "sub": "u-3", "email": "es@example.com",
+        {"aud": "wrong-audience", "iss": ISSUER, "sub": "u-3", "email": "es@example.com",
          "user_role": "agent", "iat": now, "exp": now + 60},
         private_pem, algorithm="ES256", headers={"kid": "test-kid"},
     )
     cookie_val = _wrap_token(token)
 
-    monkeypatch.setenv("SUPABASE_URL", "https://fake.supabase.co")
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
     monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
 
     mock_client = _make_mock_jwks_client(public_key)
@@ -200,13 +208,13 @@ def test_es256_expired_token_is_401(monkeypatch, ec_keypair):
     private_pem, public_key = ec_keypair
     now = int(time.time())
     token = jwt.encode(
-        {"aud": "authenticated", "sub": "u-4", "email": "es@example.com",
+        {"aud": "authenticated", "iss": ISSUER, "sub": "u-4", "email": "es@example.com",
          "user_role": "agent", "iat": now - 120, "exp": now - 60},
         private_pem, algorithm="ES256", headers={"kid": "test-kid"},
     )
     cookie_val = _wrap_token(token)
 
-    monkeypatch.setenv("SUPABASE_URL", "https://fake.supabase.co")
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
     monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
 
     mock_client = _make_mock_jwks_client(public_key)
@@ -226,14 +234,15 @@ def test_alg_none_is_401(monkeypatch):
     now = int(time.time())
     # Manually craft an alg:none token (PyJWT won't encode it so we build the raw form)
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).rstrip(b"=").decode()
-    payload_data = {"aud": "authenticated", "sub": "u-5", "email": "none@example.com",
-                    "user_role": "admin", "iat": now, "exp": now + 60}
+    payload_data = {"aud": "authenticated", "iss": ISSUER, "sub": "u-5",
+                    "email": "none@example.com", "user_role": "admin",
+                    "iat": now, "exp": now + 60}
     payload = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).rstrip(b"=").decode()
     token = f"{header}.{payload}."  # unsigned
 
     cookie_val = _wrap_token(token)
 
-    monkeypatch.setenv("SUPABASE_URL", "https://fake.supabase.co")
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
     monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
 
     app = FastAPI()
@@ -289,3 +298,161 @@ def test_hs256_with_no_secret_is_503(monkeypatch):
 
     r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
     assert r.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# NEW security tests (from review)
+# ---------------------------------------------------------------------------
+
+def test_wrong_issuer_is_401(monkeypatch):
+    """A valid HS256 token whose iss is a different Supabase project → 401."""
+    now = int(time.time())
+    token = jwt.encode(
+        {"aud": "authenticated", "iss": "https://other-project.supabase.co/auth/v1",
+         "sub": "u-8", "email": "attacker@evil.com", "user_role": "admin",
+         "iat": now, "exp": now + 60},
+        SECRET, algorithm="HS256",
+    )
+    cookie_val = _wrap_token(token)
+
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+
+    r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    assert r.status_code == 401
+
+
+def test_es256_unknown_kid_is_401(monkeypatch, ec_keypair):
+    """An ES256 token whose kid is not in the JWKS → 401 (PyJWKClientError)."""
+    private_pem, _ = ec_keypair
+    now = int(time.time())
+    token = jwt.encode(
+        {"aud": "authenticated", "iss": ISSUER, "sub": "u-9", "email": "es@example.com",
+         "user_role": "agent", "iat": now, "exp": now + 60},
+        private_pem, algorithm="ES256", headers={"kid": "unknown-kid"},
+    )
+    cookie_val = _wrap_token(token)
+
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
+
+    mock_client = MagicMock()
+    mock_client.get_signing_key_from_jwt.side_effect = jwt.exceptions.PyJWKClientError("kid not found")
+
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+
+    with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
+        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+
+    assert r.status_code == 401
+
+
+def test_es256_jwks_network_failure_is_503(monkeypatch, ec_keypair):
+    """JWKS endpoint unreachable → 503, not 401 (network failures must not silently lock out users)."""
+    private_pem, _ = ec_keypair
+    now = int(time.time())
+    token = jwt.encode(
+        {"aud": "authenticated", "iss": ISSUER, "sub": "u-10", "email": "es@example.com",
+         "user_role": "agent", "iat": now, "exp": now + 60},
+        private_pem, algorithm="ES256", headers={"kid": "test-kid"},
+    )
+    cookie_val = _wrap_token(token)
+
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
+
+    mock_client = MagicMock()
+    mock_client.get_signing_key_from_jwt.side_effect = jwt.exceptions.PyJWKClientConnectionError("unreachable")
+
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+
+    with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
+        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+
+    assert r.status_code == 503
+
+
+def test_alg_confusion_forged_hs256_with_ec_public_key_is_401(monkeypatch, ec_keypair):
+    """Algorithm-confusion attack: HS256 token whose HMAC was computed with the EC
+    public key bytes (raw DER) → 401.
+
+    Modern PyJWT rejects PEM-encoded asymmetric material as an HMAC key (InvalidKeyError),
+    so the attacker would use the raw DER bytes instead. The validator must reject this
+    because the server's real SUPABASE_JWT_SECRET is a different value — the forged HMAC
+    won't verify against it, and the Exception fallback ensures no 500 leaks.
+    """
+    import hmac as _hmac
+    import hashlib as _hashlib
+
+    private_key_pem, public_key_obj = ec_keypair
+    # Serialize the EC public key to raw DER bytes — what an attacker would use as
+    # the HMAC "secret" in a classic alg-confusion attack.
+    public_der_bytes = public_key_obj.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    now = int(time.time())
+    # Manually build the forged HS256 token using the DER bytes as the HMAC key,
+    # bypassing PyJWT's PEM-format guard.
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
+    ).rstrip(b"=").decode()
+    payload_data = {"aud": "authenticated", "iss": ISSUER, "sub": "u-11",
+                    "email": "attacker@evil.com", "user_role": "admin",
+                    "iat": now, "exp": now + 60}
+    payload = base64.urlsafe_b64encode(
+        json.dumps(payload_data).encode()
+    ).rstrip(b"=").decode()
+    signing_input = f"{header}.{payload}".encode()
+    forged_sig = _hmac.new(public_der_bytes, signing_input, _hashlib.sha256).digest()
+    forged_sig_b64 = base64.urlsafe_b64encode(forged_sig).rstrip(b"=").decode()
+    forged_token = f"{header}.{payload}.{forged_sig_b64}"
+
+    cookie_val = _wrap_token(forged_token)
+
+    # The real secret is something entirely different — the forged HMAC won't verify.
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+
+    r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    assert r.status_code == 401
+
+
+def test_rs256_is_rejected(monkeypatch):
+    """RS256 tokens are no longer accepted (unused surface) → 401."""
+    # We don't need a real RSA key — just a token whose header claims RS256.
+    # jwt.get_unverified_header will read it and we expect early rejection.
+    now = int(time.time())
+    header = base64.urlsafe_b64encode(
+        json.dumps({"alg": "RS256", "typ": "JWT"}).encode()
+    ).rstrip(b"=").decode()
+    payload_data = {"aud": "authenticated", "iss": ISSUER, "sub": "u-12",
+                    "email": "rs@example.com", "user_role": "agent",
+                    "iat": now, "exp": now + 60}
+    payload = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).rstrip(b"=").decode()
+    # Fake signature — will be rejected before signature verification anyway.
+    token = f"{header}.{payload}.fakesig"
+    cookie_val = _wrap_token(token)
+
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+
+    r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    assert r.status_code == 401
