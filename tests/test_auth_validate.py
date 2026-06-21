@@ -14,7 +14,10 @@ from src.api.auth_validate import router as auth_validate_router
 from src.auth import require_bearer
 
 SECRET = "test-supabase-secret-32bytes-long!!"  # >=32 bytes to avoid InsecureKeyLengthWarning
-SUPABASE_URL = "https://fake.supabase.co"
+# All tests that set SUPABASE_URL use this ref so cookie names align with scoping.
+SUPABASE_URL = "https://abcdef.supabase.co"
+OUR_REF = "abcdef"
+OUR_COOKIE = f"sb-{OUR_REF}-auth-token"
 ISSUER = f"{SUPABASE_URL}/auth/v1"
 
 # ---------------------------------------------------------------------------
@@ -77,7 +80,7 @@ def client(monkeypatch):
 
 def test_valid_session_returns_email_and_role(client):
     val = _make_cookie_value(email="broker@x.com", role="compliance")
-    r = client.get("/v1/auth/validate", cookies={"sb-abcd-auth-token": val})
+    r = client.get("/v1/auth/validate", cookies={OUR_COOKIE: val})
     assert r.status_code == 200
     assert r.headers["X-Auth-Email"] == "broker@x.com"
     assert r.headers["X-Auth-Role"] == "compliance"
@@ -92,7 +95,7 @@ def test_missing_user_role_defaults_to_agent(client):
     )
     val = "base64-" + base64.urlsafe_b64encode(
         json.dumps({"access_token": access}).encode()).rstrip(b"=").decode()
-    r = client.get("/v1/auth/validate", cookies={"sb-x-auth-token": val})
+    r = client.get("/v1/auth/validate", cookies={OUR_COOKIE: val})
     assert r.status_code == 200
     assert r.headers["X-Auth-Role"] == "agent"
 
@@ -101,20 +104,20 @@ def test_chunked_cookie_is_reassembled(client):
     val = _make_cookie_value(email="c@x.com")
     mid = len(val) // 2
     r = client.get("/v1/auth/validate",
-                   cookies={"sb-x-auth-token.0": val[:mid], "sb-x-auth-token.1": val[mid:]})
+                   cookies={f"{OUR_COOKIE}.0": val[:mid], f"{OUR_COOKIE}.1": val[mid:]})
     assert r.status_code == 200
     assert r.headers["X-Auth-Email"] == "c@x.com"
 
 
 def test_expired_token_is_401(client):
     val = _make_cookie_value(exp_delta=-10)
-    r = client.get("/v1/auth/validate", cookies={"sb-x-auth-token": val})
+    r = client.get("/v1/auth/validate", cookies={OUR_COOKIE: val})
     assert r.status_code == 401
 
 
 def test_wrong_secret_is_401(client):
     val = _make_cookie_value(secret="not-the-secret-and-also-long-enough!!")
-    r = client.get("/v1/auth/validate", cookies={"sb-x-auth-token": val})
+    r = client.get("/v1/auth/validate", cookies={OUR_COOKIE: val})
     assert r.status_code == 401
 
 
@@ -170,7 +173,7 @@ def test_es256_valid_token_returns_200(monkeypatch, ec_keypair):
     app.dependency_overrides[require_bearer] = lambda: None
 
     with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
-        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+        r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
 
     assert r.status_code == 200
     assert r.headers["X-Auth-Email"] == "es@example.com"
@@ -198,7 +201,7 @@ def test_es256_wrong_audience_is_401(monkeypatch, ec_keypair):
     app.dependency_overrides[require_bearer] = lambda: None
 
     with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
-        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+        r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
 
     assert r.status_code == 401
 
@@ -224,7 +227,7 @@ def test_es256_expired_token_is_401(monkeypatch, ec_keypair):
     app.dependency_overrides[require_bearer] = lambda: None
 
     with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
-        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+        r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
 
     assert r.status_code == 401
 
@@ -249,7 +252,7 @@ def test_alg_none_is_401(monkeypatch):
     app.include_router(auth_validate_router)
     app.dependency_overrides[require_bearer] = lambda: None
 
-    r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
     assert r.status_code == 401
 
 
@@ -322,7 +325,7 @@ def test_wrong_issuer_is_401(monkeypatch):
     app.include_router(auth_validate_router)
     app.dependency_overrides[require_bearer] = lambda: None
 
-    r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
     assert r.status_code == 401
 
 
@@ -348,7 +351,7 @@ def test_es256_unknown_kid_is_401(monkeypatch, ec_keypair):
     app.dependency_overrides[require_bearer] = lambda: None
 
     with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
-        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+        r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
 
     assert r.status_code == 401
 
@@ -375,7 +378,7 @@ def test_es256_jwks_network_failure_is_503(monkeypatch, ec_keypair):
     app.dependency_overrides[require_bearer] = lambda: None
 
     with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
-        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+        r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
 
     assert r.status_code == 503
 
@@ -427,7 +430,7 @@ def test_alg_confusion_forged_hs256_with_ec_public_key_is_401(monkeypatch, ec_ke
     app.include_router(auth_validate_router)
     app.dependency_overrides[require_bearer] = lambda: None
 
-    r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
     assert r.status_code == 401
 
 
@@ -454,5 +457,72 @@ def test_rs256_is_rejected(monkeypatch):
     app.include_router(auth_validate_router)
     app.dependency_overrides[require_bearer] = lambda: None
 
-    r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    r = TestClient(app).get("/v1/auth/validate", cookies={OUR_COOKIE: cookie_val})
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: multi-project cookie scoping (the production bug)
+# ---------------------------------------------------------------------------
+
+def test_foreign_project_cookie_ignored_when_our_cookie_present(monkeypatch):
+    """Two cookies on the same origin: one from a foreign Supabase project (signed with
+    a different secret) and one from our project (valid).  Validate must pick OUR cookie
+    and return 200 with the correct email — not the foreign one which would cause a 401."""
+    now = int(time.time())
+    # Foreign project cookie: signed with a different secret — would fail our HMAC check.
+    foreign_token = jwt.encode(
+        {"aud": "authenticated", "iss": "https://zzznewsletter.supabase.co/auth/v1",
+         "sub": "f-1", "email": "foreign@other.com", "user_role": "agent",
+         "iat": now, "exp": now + 60},
+        "foreign-project-secret-32bytes-xx", algorithm="HS256",
+    )
+    foreign_cookie_val = _wrap_token(foreign_token)
+
+    # Our project cookie: valid, signed with SECRET, correct issuer.
+    our_cookie_val = _make_cookie_value(email="real@ours.com", role="broker")
+
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+
+    r = TestClient(app).get(
+        "/v1/auth/validate",
+        cookies={
+            "sb-zzznewsletter-auth-token": foreign_cookie_val,
+            OUR_COOKIE: our_cookie_val,
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["X-Auth-Email"] == "real@ours.com"
+    assert r.headers["X-Auth-Role"] == "broker"
+
+
+def test_only_foreign_project_cookie_present_is_401(monkeypatch):
+    """Only a foreign project's cookie is present (our cookie is absent) → 401.
+    With scoping, the foreign cookie is invisible to the validator — there is no
+    cookie to extract, so the response is 401 (no session)."""
+    now = int(time.time())
+    foreign_token = jwt.encode(
+        {"aud": "authenticated", "iss": "https://zzznewsletter.supabase.co/auth/v1",
+         "sub": "f-2", "email": "foreign@other.com", "user_role": "agent",
+         "iat": now, "exp": now + 60},
+        "foreign-project-secret-32bytes-xx", algorithm="HS256",
+    )
+    foreign_cookie_val = _wrap_token(foreign_token)
+
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+
+    r = TestClient(app).get(
+        "/v1/auth/validate",
+        cookies={"sb-zzznewsletter-auth-token": foreign_cookie_val},
+    )
     assert r.status_code == 401

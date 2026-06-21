@@ -14,6 +14,7 @@ router = APIRouter(tags=["auth"], dependencies=[Depends(require_bearer)])
 
 _AUTH_TOKEN_RE = re.compile(r"-auth-token(\.\d+)?$")
 _CHUNK_SUFFIX_RE = re.compile(r"\.(\d+)$")
+_SUPABASE_HOST_RE = re.compile(r"^https?://([a-z0-9-]+)\.supabase\.co")
 
 # Module-level memoized JWKS client singleton.
 # Keyed on the JWKS URI so that if the URL changes between calls (e.g. in tests)
@@ -33,9 +34,31 @@ def _get_jwks_client() -> PyJWKClient | None:
     return _jwks_client_cache[jwks_uri]
 
 
-def _reassemble_supabase_cookie(cookies: dict[str, str]) -> str | None:
-    """Rebuild the @supabase/ssr session cookie value (single or chunked .0/.1/…)."""
-    relevant = {n: v for n, v in cookies.items() if _AUTH_TOKEN_RE.search(n)}
+def _project_ref(supabase_url: str) -> str | None:
+    """Extract the Supabase project ref from a supabase.co URL, or None for custom domains."""
+    m = _SUPABASE_HOST_RE.match(supabase_url)
+    return m.group(1) if m else None
+
+
+def _reassemble_supabase_cookie(cookies: dict[str, str], ref: str | None = None) -> str | None:
+    """Rebuild the @supabase/ssr session cookie value (single or chunked .0/.1/…).
+
+    If *ref* is provided (derived from SUPABASE_URL), only cookies whose name is
+    ``sb-<ref>-auth-token`` (or chunked ``sb-<ref>-auth-token.<N>``) are considered.
+    This prevents a foreign project's cookie — sharing the same browser origin — from
+    being mistakenly validated against our JWKS/secret.
+
+    If *ref* is None (pure-HS256 installs or custom-domain deployments without a
+    recognisable supabase.co host), the original any-match behaviour is preserved.
+    """
+    if ref:
+        prefix = f"sb-{ref}-auth-token"
+        relevant = {
+            n: v for n, v in cookies.items()
+            if n == prefix or n.startswith(f"{prefix}.")
+        }
+    else:
+        relevant = {n: v for n, v in cookies.items() if _AUTH_TOKEN_RE.search(n)}
     if not relevant:
         return None
     chunk_names = sorted(
@@ -71,8 +94,14 @@ def _access_token_from_cookie(raw: str | None) -> str | None:
 
 @router.get("/v1/auth/validate")
 def validate(request: Request) -> Response:
+    # Compute supabase_url, issuer, and project ref at the top so that cookie
+    # selection is scoped to OUR project before we attempt any JWT verification.
+    supabase_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    issuer = f"{supabase_url}/auth/v1" if supabase_url else None
+    ref = _project_ref(supabase_url) if supabase_url else None
+
     access_token = _access_token_from_cookie(
-        _reassemble_supabase_cookie(dict(request.cookies))
+        _reassemble_supabase_cookie(dict(request.cookies), ref)
     )
     if not access_token:
         return Response(status_code=401)
@@ -86,10 +115,6 @@ def validate(request: Request) -> Response:
         return Response(status_code=401)
 
     alg = header.get("alg", "")
-
-    # Fix #1: compute issuer once; used in both branches where SUPABASE_URL is set.
-    supabase_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
-    issuer = f"{supabase_url}/auth/v1" if supabase_url else None
 
     # Fix #4: accept ES256 only (RS256 removed — unused surface).
     if alg == "ES256":
