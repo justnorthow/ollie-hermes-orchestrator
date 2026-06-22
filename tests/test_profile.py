@@ -54,6 +54,7 @@ def test_empty_defaults_when_no_row(client, monkeypatch):
 def test_401_without_email(client):
     r = client.get("/v1/profile")
     assert r.status_code == 401
+    assert r.json()["detail"] == "No authenticated user"
 
 
 def test_503_without_env(monkeypatch):
@@ -64,6 +65,7 @@ def test_503_without_env(monkeypatch):
     app.dependency_overrides[require_bearer] = lambda: None
     r = TestClient(app).get("/v1/profile", headers={"X-Auth-Email": "a@b.com"})
     assert r.status_code == 503
+    assert r.json()["detail"] == "Profile lookup not configured"
 
 
 def test_502_on_rpc_failure(client, monkeypatch):
@@ -72,3 +74,4 @@ def test_502_on_rpc_failure(client, monkeypatch):
     monkeypatch.setattr("src.api.profile._fetch_profile_row", boom)
     r = client.get("/v1/profile", headers={"X-Auth-Email": "a@b.com"})
     assert r.status_code == 502
+    assert r.json()["detail"] == "Profile lookup failed"

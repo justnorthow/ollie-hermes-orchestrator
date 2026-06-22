@@ -1,3 +1,4 @@
+import logging
 import os
 
 import httpx
@@ -5,6 +6,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from src.auth import require_bearer
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["profile"], dependencies=[Depends(require_bearer)])
 
@@ -51,11 +54,16 @@ def get_profile(request: Request):
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     if not url or not key:
         return JSONResponse({"detail": "Profile lookup not configured"}, status_code=503)
+    # SECURITY: X-Auth-Email is TRUSTED here ONLY because this route is protected by
+    # require_bearer and the upstream nginx strips any client-supplied X-Auth-* headers
+    # and injects X-Auth-Email from the validated session. If that strip is ever missing,
+    # a caller could forge the header and fetch any user's profile.
     email = request.headers.get("X-Auth-Email", "").strip()
     if not email:
         return JSONResponse({"detail": "No authenticated user"}, status_code=401)
     try:
         row = _fetch_profile_row(email, url, key)
     except Exception:
+        _logger.exception("profile RPC failed for %s", email)
         return JSONResponse({"detail": "Profile lookup failed"}, status_code=502)
     return JSONResponse(content=_normalize(row), headers={"Cache-Control": "no-store"})
