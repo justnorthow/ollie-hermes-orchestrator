@@ -17,10 +17,22 @@ router = APIRouter(tags=["runs"], dependencies=[Depends(require_bearer)])
 
 
 def _gateway_base(agent: str) -> str | None:
-    """Hermes gateway base for an agent. HERMES_GATEWAY_URL is the shared base; the
-    agent selects the path. Confirm the real shape at deploy (see plan Notes)."""
+    """Per-agent Hermes gateway base URL (the run endpoints live at {base}/v1/runs).
+    Each agent has its OWN gateway on a distinct host:port (e.g. real-estate ->
+    http://127.0.0.1:8644), so resolve per-agent — do NOT append the agent to a
+    shared base. HERMES_GATEWAY_URLS is a JSON map {agent: url}; HERMES_GATEWAY_URL
+    is a single-agent fallback."""
+    raw = os.environ.get("HERMES_GATEWAY_URLS", "").strip()
+    if raw:
+        try:
+            url = json.loads(raw).get(agent)
+        except (ValueError, AttributeError):
+            _logger.warning("HERMES_GATEWAY_URLS is not a valid JSON object")
+            url = None
+        if url:
+            return str(url).rstrip("/")
     base = os.environ.get("HERMES_GATEWAY_URL", "").strip().rstrip("/")
-    return f"{base}/{agent}" if base else None
+    return base or None
 
 
 def _gateway_headers() -> dict:

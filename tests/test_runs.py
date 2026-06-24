@@ -100,6 +100,7 @@ def test_events_capture_error_does_not_break_stream(client, monkeypatch):
 
 def test_503_without_gateway_env(monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_URLS", raising=False)
     app = FastAPI()
     app.include_router(runs_router)
     app.dependency_overrides[require_bearer] = lambda: None
@@ -109,8 +110,26 @@ def test_503_without_gateway_env(monkeypatch):
 
 def test_503_get_events_without_gateway_env(monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_URLS", raising=False)
     app = FastAPI()
     app.include_router(runs_router)
     app.dependency_overrides[require_bearer] = lambda: None
     r = TestClient(app).get("/v1/runs/real-estate/r-1/events")
     assert r.status_code == 503
+
+
+def test_gateway_base_resolves_per_agent_without_appending(monkeypatch):
+    # Each agent has its own gateway (distinct host:port) — resolve per-agent,
+    # do NOT append /{agent}. Trailing slash is stripped.
+    monkeypatch.setenv("HERMES_GATEWAY_URLS",
+                       '{"real-estate":"http://127.0.0.1:8644/","other":"http://127.0.0.1:8645"}')
+    monkeypatch.delenv("HERMES_GATEWAY_URL", raising=False)
+    assert runs._gateway_base("real-estate") == "http://127.0.0.1:8644"
+    assert runs._gateway_base("other") == "http://127.0.0.1:8645"
+    assert runs._gateway_base("unknown") is None
+
+
+def test_gateway_base_falls_back_to_single_url(monkeypatch):
+    monkeypatch.delenv("HERMES_GATEWAY_URLS", raising=False)
+    monkeypatch.setenv("HERMES_GATEWAY_URL", "http://gw/")
+    assert runs._gateway_base("real-estate") == "http://gw"
