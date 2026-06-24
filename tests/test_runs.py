@@ -105,3 +105,12 @@ def test_503_without_gateway_env(monkeypatch):
     app.dependency_overrides[require_bearer] = lambda: None
     r = TestClient(app).post("/v1/runs/real-estate", content=b'{"input":"go"}')
     assert r.status_code == 503
+
+
+def test_503_get_events_without_gateway_env(monkeypatch):
+    monkeypatch.delenv("HERMES_GATEWAY_URL", raising=False)
+    app = FastAPI()
+    app.include_router(runs_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+    r = TestClient(app).get("/v1/runs/real-estate/r-1/events")
+    assert r.status_code == 503
