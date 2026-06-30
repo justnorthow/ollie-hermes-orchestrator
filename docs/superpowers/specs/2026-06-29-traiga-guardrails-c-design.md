@@ -1,142 +1,162 @@
-# TRAIGA Sub-project C (v1) — Pre-Run Prohibited-Use Guardrail — Design Spec
+# TRAIGA Sub-project C (v1) — Run-Proxy Guardrails: Prohibited-Use + Compliance Attestation — Design Spec
 
 **Date:** 2026-06-29
-**Status:** Draft (brainstorming settled) — pending user review
+**Status:** Draft (brainstorming settled, attestation pulled into v1) — pending user review
 **Program:** TRAIGA compliance, Sub-project **C** of 4 (A → B → **C** → D). This is **C v1**.
-**Repo:** `ollie-hermes-orchestrator` (the run-proxy lives here). Grounds in `jnow-workspace` A register.
+**Repos:** `ollie-hermes-orchestrator` (the run-proxy) **and** `jnow-workspace` (the skills emit attestations).
+Grounds in `jnow-workspace` Sub-project A's register.
 
 ## Context
 
-TRAIGA Sub-project A built the requirements **register**; Sub-project B documented JNOW's governance
-**posture** and left one honest open gap per system: **live-agent red-team / enforcement is not yet real**.
-**C makes the defensive guardrails real and server-side.** Brainstorming settled:
-- **Focus:** both guardrails + optional trust features, **guardrails first**.
-- **Enforcement point:** **centralized at the orchestrator run-proxy** — an in-path, server-side, non-LLM,
-  *unskippable* gate every governed run already traverses (nginx injects the gateway keys; the Hermes gateway
-  is only reachable through the orchestrator).
-- **v1 scope:** **pre-run prohibited-use refusal + audit.** (Post-run output gating and the consumer
-  disclosure/trust layer are **C phase-2**, explicitly out of scope here.)
+A built the requirements **register**; B documented JNOW's governance **posture** and left one honest open
+gap per system: **enforcement / live red-team is not yet real**. **C makes the guardrails real and
+server-side at the run-proxy** — an in-path, non-LLM, *unskippable* gate every governed run already
+traverses (nginx injects the gateway keys; the Hermes gateway is reachable only through the orchestrator).
+
+Brainstorming settled — **focus:** guardrails first, trust features later; **enforcement point:** centralized
+at the run-proxy; **v1 scope:** **pre-run prohibited-use refusal + post-run compliance-attestation gate +
+audit.** (The consumer disclosure/trust layer is **C phase-2**.)
+
+> **The attestation gate was pulled into v1 deliberately (product decision):** real clients need it from day
+> one — *provable, server-side proof that every client-facing AI output was compliance-screened, that a skill
+> cannot silently skip* — and it is a core part of the moat. It is the higher-value of the two gates.
 
 The run-proxy today (`src/api/runs.py`, governance-audit-substrate SP1) is a transparent pass-through with
-post-hoc audit only. C v1 adds a **pre-run screen** in `create_run`: parse the input, run a deterministic
-TRAIGA prohibited-use check, and **refuse (HTTP 403) before forwarding** on a violation — emitting a
-`governance_events` row either way. This is the ~10-line-core enforcement the feasibility review identified,
-with streaming for allowed runs **unchanged**.
+post-hoc audit only. C v1 adds **two deterministic gates**, both reusing the existing `governance_events`
+audit path:
 
-## What the gate enforces (grounded in A's register)
+1. **Pre-run prohibited-use gate** (in `create_run`) — refuse egregious prohibited requests before forwarding.
+2. **Post-run attestation gate** (in `run_events`) — for governed client-facing runs, verify the output
+   carries a valid compliance-screening **attestation**; release if attested, withhold/flag if not.
 
-A's register has 6 prohibitions. Two are **government-only** (biometric §552.054, social scoring §552.053) →
-**N/A** for JNOW (private). Of the remaining four:
+## Gate 1 — Pre-run prohibited-use (grounded in A's register)
 
-| Prohibition | Citation | Deterministically gate-able at the prompt? | C v1 handling |
+A's register has 6 prohibitions; two are **government-only** (biometric §552.054, social scoring §552.053) →
+N/A for JNOW. Of the rest:
+
+| Prohibition | Citation | Gate-able at the prompt? | v1 handling |
 |---|---|---|---|
-| Incite self-harm / harm / crime | §552.052 | **Yes** — pattern-detectable | **Pre-run block** |
-| CSAM / illegal deepfakes / minor-sexual | §552.057 | **Yes** — pattern-detectable | **Pre-run block** |
-| Sole-intent constitutional infringement | §552.055 | Weak (intent-based) | Logged as `flagged`, not blocked (low false-positive bar) |
-| Unlawful discrimination (intent) | §552.056 | No (intent; output-level) | **Out of scope of the gate** — handled downstream by the compliance-screener skill (fair-housing). Noted in the report. |
+| Incite self-harm / harm / crime | §552.052 | Yes (pattern) | **Block (403)** |
+| CSAM / illegal deepfakes / minor-sexual | §552.057 | Yes (pattern) | **Block (403)** |
+| Sole-intent constitutional infringement | §552.055 | Weak (intent) | **Flag** (forward + log) |
+| Unlawful discrimination (intent) | §552.056 | No (output-level) | Handled by **Gate 2** + the screener skill |
 
-So the v1 gate is a **deterministic egregious-use backstop** for §552.052 + §552.057 (cheap insurance + real
-§552.105(e)(2)(B) red-team/feedback evidence), and a soft `flagged` signal for §552.055. The realistic RE
-compliance risk (§552.056 fair housing) stays with the screener — the gate does not duplicate it.
+A deterministic, high-precision **egregious-use backstop** (cheap insurance + §552.105(e)(2)(B) evidence).
+A RE agent realistically never sees these; the value is the unskippable server-side block + the audit record.
 
-## Architecture (orchestrator changes only; no Hermes/agent changes)
+## Gate 2 — Post-run compliance attestation (the moat)
 
+**Claim it proves to a client:** *every client-facing AI output from your brokerage was compliance-screened,
+and the platform enforces it server-side — a skill cannot ship unscreened content.*
+
+**Mechanism (keeps the proxy deterministic/non-LLM — the screening intelligence stays in the skill):**
+1. **Skills emit an attestation.** When a client-facing skill (compliance-screener, newsletter, and future
+   client-facing skills) produces output, it appends a machine-readable, consumer-invisible attestation:
+   ```
+   <final client-facing content>
+
+   <!--JNOW-COMPLIANCE-ATTESTATION
+   {"screened":"pass","rules":["fha-...","trec-535-155"],"skill":"newsletter","v":1}
+   -->
+   ```
+   `screened` ∈ `pass | fail | na`. (`na` = the skill is non-client-facing / nothing to screen.)
+2. **The proxy verifies + strips it.** For a **governed** run (one carrying the existing `X-Gov-App` /
+   `X-Gov-Event-Type` descriptor headers), `run_events` **buffers** the output (instead of streaming),
+   parses the attestation, then:
+   - `screened == pass` → **strip** the attestation comment, deliver the clean content, emit
+     `governance_events(event_type="attestation.pass", findings=rules)`.
+   - attestation **missing** or `screened == fail` → **enforce mode:** withhold the output, deliver a
+     "held for compliance review" message, emit `attestation.withheld`. **observe mode:** deliver the content
+     but emit `attestation.unattested` (so rollout is safe — start observe, flip to enforce per app).
+   - `screened == na` → deliver, emit `attestation.na`.
+3. The consumer never sees the attestation comment; the **audit trail** holds the provable record.
+
+**Trust boundary (stated honestly):** the proxy enforces the attestation is *present and pass* — it catches a
+skill that **omits** screening (the realistic failure: a new/edited skill that forgot the gate). It does not
+catch a skill that *lies* (emits `pass` without screening); that is an internal trust boundary JNOW controls
+and tests. For clients, the attestation + audit trail is the provable, enforced record.
+
+**Streaming trade-off:** governed runs become **non-streaming** (buffered) so the output can be gated before
+release. Acceptable for compliance-gated client-facing content; **non-governed runs stream unchanged.**
+
+**Rollout safety:** `GUARDRAIL_ENFORCE_APPS` (env, comma-sep app ids) controls which governed apps are in
+**enforce** vs **observe** mode. v1 ships observe-by-default; flip apps to enforce once their skills emit
+attestations and the events look clean.
+
+## Architecture
+
+**`ollie-hermes-orchestrator`:**
 ```
 src/api/
-  guardrail.py          # NEW — deterministic prohibited-use screen (pure, testable, non-LLM)
-  traiga_prohibitions.json  # NEW — vendored prohibition patterns derived from A's register
-  runs.py               # MODIFY — create_run: screen input before forwarding; emit guardrail event
-  test_guardrail.py     # NEW — unit tests for the screen
-  test_runs_guardrail.py# NEW — integration: blocked run returns 403 + emits event + does NOT forward
+  guardrail.py            # NEW — pure: screen_input() (Gate 1) + parse_attestation()/decide() (Gate 2)
+  traiga_prohibitions.json# NEW — vendored prohibition patterns derived from A's register (Gate 1)
+  runs.py                 # MODIFY — create_run: pre-run screen (Gate 1);
+                          #          run_events: buffer governed runs, attestation gate (Gate 2)
+  test_guardrail.py       # NEW — unit: screen_input + attestation parse/decide
+  test_runs_guardrail.py  # NEW — integration: 403 block; withhold/observe; pass strips + delivers; non-governed streams
 ```
 
-### `traiga_prohibitions.json` (vendored, grounded)
-
-A small file derived from A's register (kept in the orchestrator so the box has it; refreshed when the
-register changes — a documented manual step, since the orchestrator does not have the jnow-workspace tree).
-Shape — one entry per gate-able prohibition:
-```json
-[
-  {"id": "prohibited-incite-self-harm-or-crime", "citation": "§552.052", "action": "block",
-   "patterns": ["how (do|can) i (kill|hurt|harm) ...", "...suicide method...", "...make a bomb..."]},
-  {"id": "prohibited-csam-and-illegal-deepfakes", "citation": "§552.057", "action": "block",
-   "patterns": ["...sexual ... (child|minor|underage)...", "...deepfake ... nude...", ...]},
-  {"id": "prohibited-constitutional-infringement-sole-intent", "citation": "§552.055", "action": "flag",
-   "patterns": [...]}
-]
+**`jnow-workspace` (skills emit the attestation):**
 ```
-Patterns are conservative (high-precision, low false-positive) regexes/keywords — the goal is to catch
-unambiguous egregious requests, not to be a content moderator. A RE agent realistically never sees these;
-the value is the unskippable backstop + safe-harbor evidence.
-
-### `guardrail.py`
-
+development/client-apps/real-estate/compliance-screener/   # screener output appends the attestation block
+development/client-apps/real-estate/skills/newsletter/     # newsletter output appends the attestation block
+development/governance/jnow-posture/ATTESTATION.md          # NEW — the shared attestation contract (format + screened values)
 ```
-screen_input(text: str, prohibitions: list) -> dict
-  # returns {"decision": "allow" | "block" | "flag",
-  #          "prohibition": <id or None>, "citation": <str or None>, "matched": <pattern or None>}
-  # block on the first action=block match; else flag on an action=flag match; else allow.
-```
-Pure, deterministic, no I/O — unit-tested in isolation. Loads `traiga_prohibitions.json` once at import.
-
-### `runs.py` — `create_run` integration
-
-Before forwarding (the body is already `await request.body()`):
-```python
-verdict = screen_input(extract_input(body), PROHIBITIONS)
-if verdict["decision"] == "block":
-    _write_event({... event_type: "guardrail.blocked", status: "blocked",
-                  title: verdict["citation"], findings: verdict["prohibition"], content: <redacted/snippet>})
-    return JSONResponse({"detail": "This request was blocked by TRAIGA policy.",
-                         "citation": verdict["citation"]}, status_code=403)
-# flag -> emit a "guardrail.flagged" event but FORWARD (do not block); allow -> forward as today
-```
-- `extract_input(body)` parses the run-create JSON `input` (defensive: malformed body → allow + log, never
-  500 the proxy).
-- Guardrail events reuse the existing `_write_event` path + `governance_events` schema (append-only,
-  service-role insert). New `event_type`s: `guardrail.blocked`, `guardrail.flagged`. The blocked event stores
-  a redacted snippet (not the full prohibited text) — do not persist verbatim egregious content.
-- **Allowed runs are byte-for-byte unchanged** (no added latency beyond a regex scan; streaming intact).
+The attestation **contract** (`ATTESTATION.md`) is the single source of truth both sides implement; the
+orchestrator vendors a copy of the parse rules (the box has no jnow-workspace tree).
 
 ## Data flow
 
 ```
-browser → nginx (injects X-Auth-*) → orchestrator create_run
-    → screen_input(input, PROHIBITIONS)
-        block → 403 + governance_events(guardrail.blocked)         [run NOT forwarded]
-        flag  → governance_events(guardrail.flagged) → forward      [run proceeds]
-        allow → forward to Hermes gateway                           [unchanged]
+browser → nginx (X-Auth-*) → orchestrator
+  create_run:  screen_input(input)
+                 block → 403 + governance_events(guardrail.blocked)         [NOT forwarded]
+                 flag  → governance_events(guardrail.flagged) → forward
+                 allow → forward
+  run_events (governed run): buffer output → parse_attestation → decide
+                 pass        → strip comment, deliver, governance_events(attestation.pass)
+                 missing/fail→ enforce: withhold + attestation.withheld | observe: deliver + attestation.unattested
+                 na          → deliver, attestation.na
+  run_events (non-governed): stream unchanged
 ```
 
 ## Trust / evidence bar
 
-- The gate is **deterministic and server-side** — it cannot be bypassed by prompt injection (it is not the
-  LLM) and runs on every governed create. This is exactly the *unskippable enforcement* B's posture said it
-  lacked; it converts the per-system `safe-harbor-adversarial-red-team-testing` gap toward `applies`
-  (red-team the gate as one surface).
-- Every decision is **audited** (`governance_events`), giving §552.105(e)(2)(B) "discovers via testing/
-  feedback" evidence and a queryable record.
-- **Honest scope:** v1 blocks only the two unambiguous egregious prohibitions; §552.056 fair-housing stays
-  with the screener; intent-based §552.055 is flag-only. The spec does not overclaim coverage.
+- Both gates are **deterministic + server-side** — unbypassable by prompt injection (not the LLM), run on
+  every governed create/stream. This is the *unskippable enforcement* B's posture lacked; it converts the
+  per-system `safe-harbor-adversarial-red-team-testing` gap toward `applies` (red-team the gates as one
+  surface) and is the enforced basis for the client moat claim.
+- Every decision is **audited** (`governance_events`, append-only) — §552.105(e)(2)(B) evidence + a queryable
+  per-output screening record clients can be shown.
+- **Honest scope:** Gate 1 blocks only the two unambiguous egregious prohibitions; Gate 2 enforces *presence*
+  of screening, not its correctness; §552.056 correctness stays with the screener. No overclaim.
 
 ## Success criteria (C v1 done)
 
-1. `guardrail.py` + `traiga_prohibitions.json` exist; `screen_input` returns block/flag/allow correctly
-   (unit-tested incl. the malformed-input → allow path).
-2. `create_run` blocks a §552.052/§552.057 prompt with a 403 + a `guardrail.blocked` event and does **not**
-   forward; a flagged prompt forwards but emits `guardrail.flagged`; a normal prompt is byte-for-byte
-   unchanged (integration-tested with a stubbed gateway).
-3. Existing run-proxy tests still pass (no regression to the audit path or streaming).
-4. Deployed to the **sandbox** orchestrator (`178.105.216.167`, NOT prod); a smoke test shows a blocked
-   prompt returns 403 and lands a `governance_events` row visible in the Compliance viewer.
-5. A short note updates B's posture: the red-team gap is now partially closed (the gate is the testable
-   enforcement surface).
+1. `guardrail.py`: `screen_input` (block/flag/allow, malformed-input→allow) and `parse_attestation`/`decide`
+   (pass/withhold/unattested/na, missing-or-malformed comment handled) — unit-tested.
+2. `create_run` blocks a §552.052/§552.057 prompt (403 + `guardrail.blocked`, not forwarded); normal prompt
+   unchanged. `run_events`: a governed run with a `pass` attestation delivers clean content (comment stripped)
+   + `attestation.pass`; a governed run **missing** attestation withholds (enforce) or flags (observe); a
+   **non-governed** run streams unchanged — all integration-tested with a stubbed gateway.
+3. The compliance-screener + newsletter skills emit a valid attestation block on client-facing output (skill
+   tests updated); the `ATTESTATION.md` contract exists.
+4. Existing run-proxy + audit tests still pass (no regression to streaming on non-governed runs).
+5. Deployed to the **sandbox** orchestrator (`178.105.216.167`, NOT prod) with `GUARDRAIL_ENFORCE_APPS`
+   observe-by-default; smoke: a blocked prompt → 403 + event; a governed run with a `pass` attestation →
+   clean delivery + `attestation.pass` row in the Compliance viewer; a forged un-attested governed run →
+   `attestation.unattested` (observe) row.
+6. B's posture note updated: the red-team gap is now partially closed (the gates are the testable surface).
 
 ## Explicitly out of scope (C v1)
 
-- **Post-run output gating** (buffer-and-check governed outputs before release) — C phase-2.
-- **Consumer disclosure / trust features** (voluntary "AI-assisted, governed" surface + explanation) — C phase-2.
-- **§552.056 fair-housing intent** detection at the gate — stays with the compliance-screener skill.
-- An LLM classifier in the proxy — deliberately avoided (keeps the gate deterministic, fast, unfailing).
-- **Sub-project D** (client TRAIGA-readiness offering).
-- Auto-syncing `traiga_prohibitions.json` from the live register — v1 vendors it; refresh is a documented manual step.
+- **Consumer disclosure / trust features** (voluntary "AI-assisted, governed" surface + plain-language
+  explanation) — C phase-2.
+- **§552.056 fair-housing correctness** at the proxy — stays with the screener skill (Gate 2 enforces that
+  screening *ran*, not that its verdict is right).
+- An **LLM classifier** in the proxy — deliberately avoided (gates stay deterministic, fast, unfailing).
+- **Cryptographic signing** of attestations (a skill that lies is an internal trust boundary) — a possible
+  phase-2 hardening, not v1.
+- **Auto-syncing** `traiga_prohibitions.json` / the attestation parser from the live register — v1 vendors
+  them; refresh is a documented manual step.
+- **Sub-project D** (client TRAIGA-readiness offering — it consumes C's enforced attestations as proof).
