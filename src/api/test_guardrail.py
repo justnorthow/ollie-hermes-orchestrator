@@ -14,3 +14,20 @@ def test_allows_normal_re():
 def test_malformed_input_allows():
     assert screen_input(None, P)["decision"]=="allow"
     assert screen_input("", P)["decision"]=="allow"
+
+from guardrail import parse_attestation, strip_attestation, decide_attestation
+ATT = 'Listing copy here.\n<!--JNOW-COMPLIANCE-ATTESTATION\n{"screened":"pass","rules":["fha-x"],"skill":"newsletter","v":1}\n-->'
+def test_parse_and_strip():
+    a = parse_attestation(ATT); assert a["screened"]=="pass" and a["rules"]==["fha-x"]
+    assert "JNOW-COMPLIANCE-ATTESTATION" not in strip_attestation(ATT) and "Listing copy here." in strip_attestation(ATT)
+def test_parse_missing_or_malformed():
+    assert parse_attestation("no attestation here") is None
+    assert parse_attestation("<!--JNOW-COMPLIANCE-ATTESTATION\nnot json\n-->") is None
+def test_decide_pass_delivers():
+    d = decide_attestation({"screened":"pass"}, enforce=True); assert d["action"]=="deliver" and d["event_type"]=="attestation.pass"
+def test_decide_missing_enforce_withholds():
+    d = decide_attestation(None, enforce=True); assert d["action"]=="withhold" and d["event_type"]=="attestation.withheld"
+def test_decide_missing_observe_delivers_flagged():
+    d = decide_attestation(None, enforce=False); assert d["action"]=="deliver" and d["event_type"]=="attestation.unattested"
+def test_decide_na_delivers():
+    assert decide_attestation({"screened":"na"}, enforce=True)["event_type"]=="attestation.na"

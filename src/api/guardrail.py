@@ -23,3 +23,21 @@ def screen_input(text, prohibitions) -> dict:
                     return {"decision": "block", "prohibition": d["id"], "citation": d["citation"], "matched": rx.pattern}
                 flagged = flagged or {"decision": "flag", "prohibition": d["id"], "citation": d["citation"], "matched": rx.pattern}
     return flagged or {"decision": "allow", "prohibition": None, "citation": None, "matched": None}
+
+_ATT_RX = re.compile(r"<!--JNOW-COMPLIANCE-ATTESTATION\s*(\{.*?\})\s*-->", re.S)
+def parse_attestation(output: str):
+    if not output: return None
+    m = _ATT_RX.search(output)
+    if not m: return None
+    try: return json.loads(m.group(1))
+    except Exception: return None
+def strip_attestation(output: str) -> str:
+    return _ATT_RX.sub("", output or "").rstrip() if output else output
+def decide_attestation(att, enforce: bool) -> dict:
+    """{action: deliver|withhold, event_type, screened}."""
+    screened = (att or {}).get("screened")
+    if screened == "pass": return {"action":"deliver","event_type":"attestation.pass","screened":"pass"}
+    if screened == "na":   return {"action":"deliver","event_type":"attestation.na","screened":"na"}
+    # missing attestation or screened in (fail, other)
+    if enforce: return {"action":"withhold","event_type":"attestation.withheld","screened":screened}
+    return {"action":"deliver","event_type":"attestation.unattested","screened":screened}
