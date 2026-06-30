@@ -10,10 +10,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.extractors import EXTRACTORS
 from src.auth import require_bearer
+from .guardrail import screen_input, load_prohibitions
 
 _logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["runs"], dependencies=[Depends(require_bearer)])
+
+PROHIBITIONS = load_prohibitions()
 
 
 def _gateway_base(agent: str) -> str | None:
@@ -83,11 +86,58 @@ def _write_event(row: dict, url: str, key: str) -> None:
     resp.raise_for_status()
 
 
+def _extract_input(body: bytes) -> str:
+    """Extract the user prompt from a run-create body. Any error -> '' (allows, never raises)."""
+    try:
+        data = json.loads(body)
+        val = data.get("input", "")
+        return val if isinstance(val, str) else ""
+    except Exception:
+        return ""
+
+
+def _emit_guardrail(request: Request, agent: str, event_type: str, verdict: dict, snippet: str = "") -> None:
+    """Best-effort: write a guardrail governance event. Never raises."""
+    try:
+        url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        if not (url and key):
+            return
+        email = request.headers.get("X-Auth-Email", "").strip()
+        role = request.headers.get("X-Auth-Role", "").strip() or "agent"
+        # Store a SHORT redacted snippet — never the full prohibited text.
+        safe_content = (snippet[:80] + "…") if len(snippet) > 80 else snippet or "[redacted]"
+        _write_event({
+            "user_email": email,
+            "user_role": role,
+            "app": agent,
+            "event_type": event_type,
+            "status": verdict.get("decision"),
+            "title": verdict.get("citation"),
+            "findings": verdict.get("prohibition"),
+            "content": safe_content,
+            "run_id": None,
+        }, url, key)
+    except Exception:
+        _logger.warning("_emit_guardrail failed", exc_info=True)
+
+
 @router.post("/v1/runs/{agent}")
 async def create_run(agent: str, request: Request):
     if not _gateway_base(agent):
         return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
-    status, content = _create_run(agent, await request.body())
+    body = await request.body()
+    inp = _extract_input(body)
+    v = screen_input(inp, PROHIBITIONS)
+    if v["decision"] == "block":
+        _emit_guardrail(request, agent, "guardrail.blocked", v, inp[:60])
+        return JSONResponse(
+            {"detail": "This request was blocked by TRAIGA policy.", "citation": v["citation"]},
+            status_code=403,
+        )
+    if v["decision"] == "flag":
+        _emit_guardrail(request, agent, "guardrail.flagged", v, inp[:60])
+    status, content = _create_run(agent, body)
     return Response(content=content, status_code=status, media_type="application/json")
 
 
