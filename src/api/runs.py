@@ -159,10 +159,12 @@ async def run_events(agent: str, run_id: str, request: Request):
         chunks: list[bytes] = []
         extractor = EXTRACTORS.get(gov_event)
 
-        if gov_app and not extractor:
-            # GOVERNED ATTESTATION PATH (Gate 2): buffer all chunks, apply attestation gate.
-            # Non-governed runs (no X-Gov-App) and governed+extractor runs fall through to the
-            # ELSE branch, which preserves the existing yield-then-capture behavior unchanged.
+        if gov_app:
+            # GOVERNED PATH (C v1.1 — unified): buffer the output, then apply the attestation
+            # gate to EVERY governed run for enforcement (deliver/withhold + attestation event).
+            # Where the event-type has a registered extractor, ALSO write the rich capture row —
+            # so a run like the newsletter's `compliance_screen` gets both enforcement and its
+            # detailed findings. Non-governed runs (no X-Gov-App) stream unchanged in the ELSE.
             async for chunk in _stream_upstream(base, run_id):
                 chunks.append(chunk)
             try:
@@ -179,6 +181,7 @@ async def run_events(agent: str, run_id: str, request: Request):
                 }
                 d = decide_attestation(att, enforce)
                 if url and key:
+                    # Enforcement record (attestation gate) — always, for every governed run.
                     _write_event({
                         "user_email": email, "user_role": role,
                         "app": gov_app, "event_type": d["event_type"],
@@ -190,6 +193,20 @@ async def run_events(agent: str, run_id: str, request: Request):
                         "content": None,
                         "run_id": run_id,
                     }, url, key)
+                    # Rich capture (additive) — only when the event-type has a registered
+                    # extractor. Never let a capture failure abort delivery.
+                    if extractor and email:
+                        try:
+                            parsed = extractor(strip_attestation(out))
+                            _write_event({
+                                "user_email": email, "user_role": role,
+                                "app": gov_app, "event_type": gov_event,
+                                "status": parsed["status"], "title": gov_title or None,
+                                "findings": parsed["findings"], "content": parsed["content"],
+                                "run_id": run_id,
+                            }, url, key)
+                        except Exception:
+                            _logger.exception("governance capture failed for run %s", run_id)
                 if d["action"] == "withhold":
                     frame_out = "Held for compliance review."
                 else:
@@ -203,28 +220,9 @@ async def run_events(agent: str, run_id: str, request: Request):
                 for chunk in chunks:
                     yield chunk
         else:
-            # NON-GOVERNED or GOVERNED+EXTRACTOR PATH (unchanged): yield each chunk as it
-            # arrives, then post-hoc compliance capture (extractor path).
+            # NON-GOVERNED PATH (unchanged): stream each chunk as it arrives.
             async for chunk in _stream_upstream(base, run_id):
-                chunks.append(chunk)
                 yield chunk
-            # Upstream closed. Capture only a governed run; never let it break the stream.
-            if not (gov_app and extractor and email and url and key):
-                return
-            try:
-                output = _extract_output(b"".join(chunks).decode("utf-8", "replace"))
-                if output is None:
-                    return
-                parsed = extractor(output)
-                _write_event({
-                    "user_email": email, "user_role": role,
-                    "app": gov_app, "event_type": gov_event,
-                    "status": parsed["status"], "title": gov_title or None,
-                    "findings": parsed["findings"], "content": parsed["content"],
-                    "run_id": run_id,
-                }, url, key)
-            except Exception:
-                _logger.exception("governance capture failed for run %s", run_id)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

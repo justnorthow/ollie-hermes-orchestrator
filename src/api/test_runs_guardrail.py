@@ -230,3 +230,100 @@ def test_non_governed_streams_unchanged_no_attestation_row(client, monkeypatch):
     # Original SSE bytes passed through unchanged.
     assert b"run.completed" in r.content
     assert b"Plain output here." in r.content
+
+
+# ---------------------------------------------------------------------------
+# C v1.1 — unify: a governed run whose event-type HAS a registered extractor
+# (compliance_screen) must ALSO pass through the attestation gate for
+# enforcement, while the rich extractor capture stays additive.
+# ---------------------------------------------------------------------------
+
+def test_governed_extractor_event_observe_writes_attestation_and_capture(client, monkeypatch):
+    """Governed compliance_screen run, no attestation, observe: output delivered AND both an
+    attestation.unattested row (enforcement record) and the compliance_screen capture are written."""
+    written: list[dict] = []
+
+    async def fake_stream(base, run_id):
+        yield _sse("Newsletter body — no attestation, no compliance block.")
+
+    monkeypatch.setattr(runs, "_stream_upstream", fake_stream)
+    monkeypatch.setattr(runs, "_write_event", lambda row, url, key: written.append(row))
+    monkeypatch.delenv("GUARDRAIL_ENFORCE_APPS", raising=False)
+
+    r = client.get(
+        "/v1/runs/real-estate/r-1/events",
+        headers={
+            "X-Auth-Email": "broker@example.com",
+            "X-Auth-Role": "broker",
+            "X-Gov-App": "newsletter",
+            "X-Gov-Event-Type": "compliance_screen",
+        },
+    )
+
+    assert r.status_code == 200
+    types = [w["event_type"] for w in written]
+    assert "attestation.unattested" in types, "attestation gate must run even when an extractor exists"
+    assert "compliance_screen" in types, "rich extractor capture must remain (additive)"
+    assert "Newsletter body" in r.content.decode()
+
+
+def test_governed_extractor_event_pass_strips_and_writes_both(client, monkeypatch):
+    """Governed compliance_screen run + pass attestation: comment stripped, delivered, and BOTH
+    attestation.pass and compliance_screen rows written."""
+    written: list[dict] = []
+    output = f"Newsletter body.\n{_ATT_PASS_BLOCK}"
+
+    async def fake_stream(base, run_id):
+        yield _sse(output)
+
+    monkeypatch.setattr(runs, "_stream_upstream", fake_stream)
+    monkeypatch.setattr(runs, "_write_event", lambda row, url, key: written.append(row))
+    monkeypatch.delenv("GUARDRAIL_ENFORCE_APPS", raising=False)
+
+    r = client.get(
+        "/v1/runs/real-estate/r-1/events",
+        headers={
+            "X-Auth-Email": "broker@example.com",
+            "X-Auth-Role": "broker",
+            "X-Gov-App": "newsletter",
+            "X-Gov-Event-Type": "compliance_screen",
+        },
+    )
+
+    assert r.status_code == 200
+    types = [w["event_type"] for w in written]
+    assert "attestation.pass" in types
+    assert "compliance_screen" in types
+    content = r.content.decode()
+    assert "JNOW-COMPLIANCE-ATTESTATION" not in content, "attestation comment must be stripped"
+    assert "Newsletter body." in content
+
+
+def test_governed_extractor_event_enforce_withholds(client, monkeypatch):
+    """Governed compliance_screen run + no attestation + enforce: output withheld, attestation.withheld
+    recorded — proving enforcement now reaches the extractor (live newsletter) path."""
+    written: list[dict] = []
+
+    async def fake_stream(base, run_id):
+        yield _sse("Newsletter body should be withheld.")
+
+    monkeypatch.setattr(runs, "_stream_upstream", fake_stream)
+    monkeypatch.setattr(runs, "_write_event", lambda row, url, key: written.append(row))
+    monkeypatch.setenv("GUARDRAIL_ENFORCE_APPS", "newsletter")
+
+    r = client.get(
+        "/v1/runs/real-estate/r-1/events",
+        headers={
+            "X-Auth-Email": "broker@example.com",
+            "X-Auth-Role": "broker",
+            "X-Gov-App": "newsletter",
+            "X-Gov-Event-Type": "compliance_screen",
+        },
+    )
+
+    assert r.status_code == 200
+    types = [w["event_type"] for w in written]
+    assert "attestation.withheld" in types
+    content = r.content.decode()
+    assert "Held for compliance review." in content
+    assert "Newsletter body should be withheld." not in content

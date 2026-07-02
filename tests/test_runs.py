@@ -48,12 +48,16 @@ def test_create_forwards_and_returns_run_id(client, monkeypatch):
     assert seen["agent"] == "real-estate"
 
 
-def test_events_streams_through_and_writes_one_row_on_governed_run(client, monkeypatch):
+def test_governed_compliance_screen_run_enforces_and_captures(client, monkeypatch):
+    """C v1.1: a governed compliance_screen run now passes through the attestation gate
+    (enforcement record) AND writes the rich extractor capture — two rows, one delivered frame.
+    (Previously this streamed through unchanged and wrote only the capture row.)"""
     written = []
     async def fake_stream(base, run_id):
         yield sse('Body.\n\n```compliance\nSTATUS: PASS\n```')
     monkeypatch.setattr(runs, "_stream_upstream", fake_stream)
     monkeypatch.setattr(runs, "_write_event", lambda row, url, key: written.append(row))
+    monkeypatch.delenv("GUARDRAIL_ENFORCE_APPS", raising=False)
     r = client.get(
         "/v1/runs/real-estate/r-1/events",
         headers={"X-Auth-Email": "a@b.com", "X-Auth-Role": "agent",
@@ -61,14 +65,17 @@ def test_events_streams_through_and_writes_one_row_on_governed_run(client, monke
                  "X-Gov-Title": "Field%20Notes"},
     )
     assert r.status_code == 200
-    assert b"run.completed" in r.content              # streamed through unchanged
-    assert len(written) == 1
-    row = written[0]
-    assert row["user_email"] == "a@b.com"
-    assert row["app"] == "newsletter"
-    assert row["status"] == "pass"
-    assert row["title"] == "Field Notes"             # URL-decoded
-    assert row["run_id"] == "r-1"
+    assert b"run.completed" in r.content
+    by_type = {w["event_type"]: w for w in written}
+    # Enforcement record (attestation gate) — no attestation present ⇒ unattested (observe).
+    assert "attestation.unattested" in by_type
+    # Rich capture row (extractor) retains the SP1 contract.
+    cap = by_type["compliance_screen"]
+    assert cap["user_email"] == "a@b.com"
+    assert cap["app"] == "newsletter"
+    assert cap["status"] == "pass"
+    assert cap["title"] == "Field Notes"             # URL-decoded
+    assert cap["run_id"] == "r-1"
 
 
 def test_events_writes_nothing_without_gov_headers(client, monkeypatch):
