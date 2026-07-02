@@ -1,0 +1,12 @@
+[
+  {"id":"prohibited-incite-self-harm-or-crime","citation":"§552.052","action":"block",
+   "patterns":["\\bhow (do|can|to) i? ?(kill|murder|hurt|harm|poison) (myself|yourself|someone|a person|people)\\b",
+               "\\b(commit|how to) suicide\\b","\\b(build|make|construct) a (bomb|explosive|weapon)\\b",
+               "\\bhow to (get away with|commit) (a )?(crime|murder|fraud)\\b"]},
+  {"id":"prohibited-csam-and-illegal-deepfakes","citation":"§552.057","action":"block",
+   "patterns":["\\b(sexual|nude|naked|explicit).{0,30}\\b(child|children|minor|underage|kid|teen|preteen)\\b",
+               "\\b(child|minor|underage).{0,30}\\b(sexual|nude|naked|explicit|porn)\\b",
+               "\\b(deepfake|deep fake).{0,30}\\b(nude|naked|sexual|porn)\\b"]},
+  {"id":"prohibited-constitutional-infringement-sole-intent","citation":"§552.055","action":"flag",
+   "patterns":["\\bsuppress (the )?(vote|votes|voters)\\b","\\bdeny .{0,20}\\b(constitutional|first amendment) rights?\\b"]}
+]
