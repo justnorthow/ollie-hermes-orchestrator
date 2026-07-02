@@ -168,6 +168,9 @@ def test_governed_no_attestation_observe_mode_delivers(client, monkeypatch):
     row = written[0]
     assert row["event_type"] == "attestation.unattested"
     assert row["app"] == "real-estate"
+    # findings is jsonb NOT NULL default '[]'; with no attestation there are no rules,
+    # but the row MUST send [] — an explicit null violates the DB constraint (regression).
+    assert row["findings"] == [], "unattested row must send findings=[] not None"
     assert "Plain listing copy here." in r.content.decode()
 
 
@@ -197,6 +200,7 @@ def test_governed_no_attestation_enforce_mode_withholds(client, monkeypatch):
     row = written[0]
     assert row["event_type"] == "attestation.withheld"
     assert row["app"] == "real-estate"
+    assert row["findings"] == [], "withheld row must send findings=[] not None"
     content = r.content.decode()
     assert "Held for compliance review." in content
     assert "Plain listing copy here." not in content

@@ -184,7 +184,9 @@ async def run_events(agent: str, run_id: str, request: Request):
                         "app": gov_app, "event_type": d["event_type"],
                         "status": d["action"],
                         "title": None,
-                        "findings": (att or {}).get("rules"),
+                        # findings is jsonb NOT NULL default '[]'; an explicit null violates
+                        # the constraint (the default only applies when omitted), so coalesce.
+                        "findings": (att or {}).get("rules") or [],
                         "content": None,
                         "run_id": run_id,
                     }, url, key)
