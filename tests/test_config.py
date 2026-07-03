@@ -28,3 +28,12 @@ def test_load_honors_path_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_STACK_DIR", str(tmp_path / "stack"))
     cfg = Config.load()
     assert cfg.hermes_stack_dir == tmp_path / "stack"
+
+
+def test_instance_id_defaults_and_reads_env(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_KEY", "k")
+    monkeypatch.delenv("INSTANCE_ID", raising=False)
+    from src.config import Config
+    assert Config.load().instance_id == "default"
+    monkeypatch.setenv("INSTANCE_ID", "sandbox")
+    assert Config.load().instance_id == "sandbox"

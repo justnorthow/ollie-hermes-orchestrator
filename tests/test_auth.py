@@ -15,6 +15,7 @@ def app(monkeypatch, tmp_path):
         hermes_profiles_dir=tmp_path / "profiles",
         systemd_user_dir=tmp_path / "systemd",
         audit_log_path=tmp_path / "audit.log",
+        instance_id="default",
     )
     a = FastAPI()
     a.state.config = cfg
