@@ -177,4 +177,8 @@ def validate(request: Request) -> Response:
     if not email:
         return Response(status_code=401)
     role = claims.get("user_role") or "agent"
-    return Response(status_code=200, headers={"X-Auth-Email": email, "X-Auth-Role": role})
+    headers = {"X-Auth-Email": email, "X-Auth-Role": role}
+    user_id = claims.get("sub")
+    if isinstance(user_id, str) and user_id:
+        headers["X-Auth-User-Id"] = user_id
+    return Response(status_code=200, headers=headers)
