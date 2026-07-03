@@ -18,6 +18,53 @@ router = APIRouter(tags=["runs"], dependencies=[Depends(require_bearer)])
 
 PROHIBITIONS = load_prohibitions()
 
+from src.api import sessions as _sessions_store
+
+# run_id -> creating user's Supabase UUID. In-memory (restart loses it; the
+# events-side check then falls through to allow — acceptable v1: run ids are
+# unguessable and expire quickly).
+_RUN_OWNERS: dict[str, str] = {}
+_RUN_OWNERS_MAX = 5000
+
+
+def _session_owner(agent: str, session_id: str) -> str | None:
+    return _sessions_store.get_session_owner(agent, session_id)
+
+
+def _record_session(agent: str, session_id: str, user_id: str) -> None:
+    _sessions_store.record_session(agent, session_id, user_id)
+
+
+def _remember_run_owner(run_id: str, user_id: str) -> None:
+    if len(_RUN_OWNERS) >= _RUN_OWNERS_MAX:
+        _RUN_OWNERS.pop(next(iter(_RUN_OWNERS)))
+    _RUN_OWNERS[run_id] = user_id
+
+
+def _extract_session_id_from_body(body: bytes) -> str | None:
+    try:
+        val = json.loads(body).get("session_id")
+        return val if isinstance(val, str) and val else None
+    except Exception:
+        return None
+
+
+def _scan_frames_for_session(raw: str) -> str | None:
+    """Find a session_id in run.completed (or any) SSE data frames."""
+    sid = None
+    for frame in raw.split("\n\n"):
+        for line in frame.split("\n"):
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            try:
+                ev = json.loads(line[5:].strip())
+            except Exception:
+                continue
+            if isinstance(ev.get("session_id"), str) and ev["session_id"]:
+                sid = ev["session_id"]
+    return sid
+
 
 def _gateway_base(agent: str) -> str | None:
     """Per-agent Hermes gateway base URL (the run endpoints live at {base}/v1/runs).
@@ -137,7 +184,22 @@ async def create_run(agent: str, request: Request):
         )
     if v["decision"] == "flag":
         _emit_guardrail(request, agent, "guardrail.flagged", v, inp[:60])
+
+    # Phase 1 session-ownership gate (fail-closed). Identity-less callers hold
+    # the orchestrator bearer key and are inside the trust boundary.
+    user_id = request.headers.get("X-Auth-User-Id", "").strip()
+    session_id = _extract_session_id_from_body(body)
+    if user_id and session_id and _session_owner(agent, session_id) != user_id:
+        return JSONResponse({"detail": "Session not found"}, status_code=403)
+
     status, content = _create_run(agent, body)
+    if user_id and status < 300:
+        try:
+            run_id = json.loads(content).get("run_id")
+            if isinstance(run_id, str) and run_id:
+                _remember_run_owner(run_id, user_id)
+        except Exception:
+            pass
     return Response(content=content, status_code=status, media_type="application/json")
 
 
@@ -146,6 +208,11 @@ async def run_events(agent: str, run_id: str, request: Request):
     base = _gateway_base(agent)
     if not base:
         return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
+
+    user_id = request.headers.get("X-Auth-User-Id", "").strip()
+    run_owner = _RUN_OWNERS.get(run_id)
+    if run_owner and user_id and run_owner != user_id:
+        return JSONResponse({"detail": "Run not found"}, status_code=403)
 
     email = request.headers.get("X-Auth-Email", "").strip()
     role = request.headers.get("X-Auth-Role", "").strip() or "agent"
@@ -169,6 +236,11 @@ async def run_events(agent: str, run_id: str, request: Request):
                 chunks.append(chunk)
             try:
                 raw = b"".join(chunks).decode("utf-8", "replace")
+                cap_user = run_owner or user_id
+                if cap_user:
+                    sid = _scan_frames_for_session(raw)
+                    if sid:
+                        _record_session(agent, sid, cap_user)
                 out = _extract_output(raw)
                 if out is None:
                     # No run.completed frame found; deliver original bytes unchanged.
@@ -220,9 +292,17 @@ async def run_events(agent: str, run_id: str, request: Request):
                 for chunk in chunks:
                     yield chunk
         else:
-            # NON-GOVERNED PATH (unchanged): stream each chunk as it arrives.
+            # NON-GOVERNED PATH: stream each chunk as it arrives; passively scan
+            # a rolling copy for the run.completed session_id to record ownership.
+            tail = b""
             async for chunk in _stream_upstream(base, run_id):
                 yield chunk
+                tail = (tail + chunk)[-65536:]
+            cap_user = run_owner or user_id
+            if cap_user:
+                sid = _scan_frames_for_session(tail.decode("utf-8", "replace"))
+                if sid:
+                    _record_session(agent, sid, cap_user)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
