@@ -22,8 +22,8 @@ DEFAULT_LABELS: dict[str, str] = {
 }
 
 _CACHE_TTL = 30.0  # seconds
-# user_id -> (tier, monotonic_expiry)
-_tier_cache: dict[str, tuple[str, float]] = {}
+# (instance_id, user_id) -> (tier, monotonic_expiry)
+_tier_cache: dict[tuple[str, str], tuple[str, float]] = {}
 
 
 def is_at_least(tier: str, minimum: str) -> bool:
@@ -58,7 +58,8 @@ def _fetch_tier(instance_id: str, user_id: str) -> str | None:
 def resolve_tier(instance_id: str, user_id: str) -> str:
     """Caller's tier, cached; fail-closed to 'member' on absence or any error."""
     now = time.monotonic()
-    hit = _tier_cache.get(user_id)
+    key = (instance_id, user_id)
+    hit = _tier_cache.get(key)
     if hit and hit[1] > now:
         return hit[0]
     try:
@@ -68,7 +69,7 @@ def resolve_tier(instance_id: str, user_id: str) -> str:
     except Exception:
         _logger.warning("resolve_tier failed; defaulting member", exc_info=True)
         tier = "member"
-    _tier_cache[user_id] = (tier, now + _CACHE_TTL)
+    _tier_cache[key] = (tier, now + _CACHE_TTL)
     return tier
 
 
@@ -76,7 +77,9 @@ def invalidate_cache(user_id: str | None = None) -> None:
     if user_id is None:
         _tier_cache.clear()
     else:
-        _tier_cache.pop(user_id, None)
+        # cache is keyed by (instance_id, user_id); sweep all instances for this user
+        for k in [k for k in _tier_cache if k[1] == user_id]:
+            _tier_cache.pop(k, None)
 
 
 def set_tier(instance_id: str, user_id: str, tier: str, assigned_by: str | None) -> None:

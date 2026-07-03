@@ -39,6 +39,11 @@ def test_resolve_tier_fails_closed_on_error(monkeypatch):
     assert roles.resolve_tier(INST, U) == "member"
 
 
+def test_resolve_tier_defaults_member_on_unknown_tier(monkeypatch):
+    monkeypatch.setattr(roles, "_fetch_tier", lambda inst, uid: "superadmin")
+    assert roles.resolve_tier(INST, U) == "member"
+
+
 def test_resolve_tier_cached(monkeypatch):
     calls = []
     monkeypatch.setattr(roles, "_fetch_tier", lambda inst, uid: calls.append(1) or "manager")
