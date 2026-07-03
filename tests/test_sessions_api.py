@@ -88,3 +88,80 @@ def test_delete_proxies_and_removes_row_for_owner(client, monkeypatch):
     assert r.status_code == 200
     assert dashboard_calls == ["/api/sessions/s-1"]
     assert sb_deletes == [("real-estate", "s-1")]
+
+
+def test_delete_removes_row_when_dashboard_returns_404(client, monkeypatch):
+    """A 404 from the dashboard means the session is already gone there — the
+    ownership row is now pointing at nothing, so it should still be cleaned up."""
+    monkeypatch.setattr(sessions, "get_session_owner", lambda a, s: USER_A)
+    sb_deletes = []
+    monkeypatch.setattr(sessions, "_dashboard_delete", lambda a, p: (404, b'{"detail":"not found"}'))
+    monkeypatch.setattr(sessions, "_delete_row", lambda a, s: sb_deletes.append((a, s)))
+    r = client.delete("/v1/sessions/real-estate/s-1", headers={"X-Auth-User-Id": USER_A})
+    assert r.status_code == 404
+    assert sb_deletes == [("real-estate", "s-1")]
+
+
+def test_delete_keeps_row_when_dashboard_returns_5xx(client, monkeypatch):
+    """On a dashboard 5xx we don't know whether the session actually got
+    deleted upstream — keep the ownership row so the session isn't left
+    orphaned-inaccessible (owner can retry the delete later)."""
+    monkeypatch.setattr(sessions, "get_session_owner", lambda a, s: USER_A)
+    sb_deletes = []
+    monkeypatch.setattr(sessions, "_dashboard_delete", lambda a, p: (500, b'{"detail":"boom"}'))
+    monkeypatch.setattr(sessions, "_delete_row", lambda a, s: sb_deletes.append((a, s)))
+    r = client.delete("/v1/sessions/real-estate/s-1", headers={"X-Auth-User-Id": USER_A})
+    assert r.status_code == 500
+    assert sb_deletes == []
+
+
+def test_touch_session_patches_last_active_at(monkeypatch):
+    """touch_session PATCHes the ownership row's last_active_at with a real
+    ISO-8601 UTC timestamp (PostgREST needs a literal value, not now())."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+    calls = []
+
+    class FakeResp:
+        status_code = 204
+
+        def raise_for_status(self):
+            pass
+
+    def fake_patch(url, params=None, headers=None, json=None, timeout=None):
+        calls.append((url, params, headers, json))
+        return FakeResp()
+
+    monkeypatch.setattr(sessions.httpx, "patch", fake_patch)
+    sessions.touch_session("real-estate", "s-1")
+
+    assert len(calls) == 1
+    url, params, headers, body = calls[0]
+    assert url == "https://test.supabase.co/rest/v1/agent_sessions"
+    assert params == {"agent_id": "eq.real-estate", "hermes_session_id": "eq.s-1"}
+    assert headers["apikey"] == "svc-key"
+    assert headers["Authorization"] == "Bearer svc-key"
+    assert "last_active_at" in body
+    # A real ISO-8601 timestamp, not the SQL literal "now()".
+    assert body["last_active_at"] != "now()"
+    assert "T" in body["last_active_at"]
+
+
+def test_touch_session_never_raises_on_failure(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+
+    def fake_patch(*a, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sessions.httpx, "patch", fake_patch)
+    sessions.touch_session("real-estate", "s-1")  # must not raise
+
+
+def test_touch_session_noop_without_supabase_config(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    called = []
+    monkeypatch.setattr(sessions.httpx, "patch", lambda *a, **kw: called.append(True))
+    sessions.touch_session("real-estate", "s-1")
+    assert called == []

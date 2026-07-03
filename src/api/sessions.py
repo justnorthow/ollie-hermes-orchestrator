@@ -9,6 +9,7 @@ Ownership rows live in Supabase `agent_sessions`, written via the service role
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -87,6 +88,25 @@ def record_session(agent: str, session_id: str, user_id: str) -> None:
         resp.raise_for_status()
     except Exception:
         _logger.warning("record_session failed", exc_info=True)
+
+
+def touch_session(agent: str, session_id: str) -> None:
+    """Best-effort: bump last_active_at for an existing ownership row. Never raises."""
+    sb = _sb()
+    if not sb:
+        return
+    url, key = sb
+    try:
+        resp = httpx.patch(
+            f"{url}/rest/v1/agent_sessions",
+            params={"agent_id": f"eq.{agent}", "hermes_session_id": f"eq.{session_id}"},
+            headers=_sb_headers(key),
+            json={"last_active_at": datetime.now(timezone.utc).isoformat()},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+    except Exception:
+        _logger.warning("touch_session failed", exc_info=True)
 
 
 def _list_user_rows(agent: str, user_id: str) -> list[dict]:
@@ -172,5 +192,10 @@ def delete_session(agent: str, session_id: str, request: Request):
     if not _dashboard_base(agent):
         return JSONResponse({"detail": "Dashboard proxy not configured"}, status_code=503)
     status, content = _dashboard_delete(agent, f"/api/sessions/{session_id}")
-    _delete_row(agent, session_id)
+    # Only drop the ownership row when the dashboard confirms the session is
+    # gone (2xx) or already gone (404). On a 5xx we don't know whether the
+    # upstream delete actually happened, so keep the row rather than risk
+    # orphaning an still-existing session with no owner record.
+    if status < 300 or status == 404:
+        _delete_row(agent, session_id)
     return Response(content=content, status_code=status, media_type="application/json")
