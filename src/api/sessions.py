@@ -15,6 +15,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
+from src.api import authz
 from src.auth import require_bearer
 
 _logger = logging.getLogger(__name__)
@@ -167,8 +168,25 @@ def _identity(request: Request) -> str:
     return request.headers.get("X-Auth-User-Id", "").strip()
 
 
+def _rbac_denied(request: Request, agent: str) -> JSONResponse | None:
+    # Mirrors src/api/runs.py::_rbac_denied -- some unit tests drive handlers
+    # with a bare Request built from a scope dict with no "app" key at all, so
+    # request.app itself can raise; guard both that and a missing config.
+    try:
+        app = request.app
+    except Exception:
+        return None
+    cfg = getattr(app.state, "config", None)
+    if cfg is None:
+        return None
+    return authz.check_agent_access(request, agent, cfg)
+
+
 @router.get("/v1/sessions/{agent}")
 def list_sessions(agent: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     user_id = _identity(request)
     if not user_id:
         return _NOT_FOUND
@@ -186,6 +204,9 @@ def list_sessions(agent: str, request: Request):
 
 @router.get("/v1/sessions/{agent}/{session_id}/messages")
 def session_messages(agent: str, session_id: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     user_id = _identity(request)
     if not user_id or get_session_owner(agent, session_id) != user_id:
         return _NOT_FOUND
@@ -197,6 +218,9 @@ def session_messages(agent: str, session_id: str, request: Request):
 
 @router.delete("/v1/sessions/{agent}/{session_id}")
 def delete_session(agent: str, session_id: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     user_id = _identity(request)
     if not user_id or get_session_owner(agent, session_id) != user_id:
         return _NOT_FOUND

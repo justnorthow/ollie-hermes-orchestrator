@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.extractors import EXTRACTORS
+from src.api import authz
 from src.auth import require_bearer
 from .guardrail import screen_input, load_prohibitions, parse_attestation, strip_attestation, decide_attestation
 
@@ -30,6 +31,21 @@ _RUN_OWNERS_MAX = 5000
 # or an old validator that forwards X-Auth-Email without X-Auth-User-Id,
 # which silently skips the Phase 1 ownership gate below.
 _IDENTITY_SKEW_WARNED = False
+
+
+def _rbac_denied(request: Request, agent: str) -> JSONResponse | None:
+    # Some unit tests drive handlers with a bare Starlette Request built from a
+    # scope dict that has no "app" key at all (no ASGI app wiring) -- request.app
+    # itself raises KeyError there, not just a missing .state.config. Guard both:
+    # absent app -> skip; app present but no config set -> skip.
+    try:
+        app = request.app
+    except Exception:
+        return None
+    cfg = getattr(app.state, "config", None)
+    if cfg is None:
+        return None
+    return authz.check_agent_access(request, agent, cfg)
 
 
 def _warn_identity_header_skew(request: Request) -> None:
@@ -211,6 +227,9 @@ def _emit_guardrail(request: Request, agent: str, event_type: str, verdict: dict
 
 @router.post("/v1/runs/{agent}")
 async def create_run(agent: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     if not _gateway_base(agent):
         return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
     body = await request.body()
@@ -263,6 +282,9 @@ def _run_owner_gate(request: Request, run_id: str) -> JSONResponse | None:
 
 @router.post("/v1/runs/{agent}/{run_id}/stop")
 async def stop_run(agent: str, run_id: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     if not _gateway_base(agent):
         return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
     denied = _run_owner_gate(request, run_id)
@@ -274,6 +296,9 @@ async def stop_run(agent: str, run_id: str, request: Request):
 
 @router.post("/v1/runs/{agent}/{run_id}/approval")
 async def approve_run(agent: str, run_id: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     if not _gateway_base(agent):
         return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
     denied = _run_owner_gate(request, run_id)
@@ -286,6 +311,9 @@ async def approve_run(agent: str, run_id: str, request: Request):
 
 @router.get("/v1/runs/{agent}")
 async def list_runs(agent: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     if not _gateway_base(agent):
         return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
     qs = request.url.query
@@ -296,6 +324,9 @@ async def list_runs(agent: str, request: Request):
 
 @router.get("/v1/runs/{agent}/{run_id}/events")
 async def run_events(agent: str, run_id: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     base = _gateway_base(agent)
     if not base:
         return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
