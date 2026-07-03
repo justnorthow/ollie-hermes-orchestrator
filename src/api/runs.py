@@ -26,6 +26,24 @@ from src.api import sessions as _sessions_store
 _RUN_OWNERS: dict[str, str] = {}
 _RUN_OWNERS_MAX = 5000
 
+# Logged once per process (see _warn_identity_header_skew) to flag stale nginx
+# or an old validator that forwards X-Auth-Email without X-Auth-User-Id,
+# which silently skips the Phase 1 ownership gate below.
+_IDENTITY_SKEW_WARNED = False
+
+
+def _warn_identity_header_skew(request: Request) -> None:
+    global _IDENTITY_SKEW_WARNED
+    if _IDENTITY_SKEW_WARNED:
+        return
+    email = request.headers.get("X-Auth-Email", "").strip()
+    user_id = request.headers.get("X-Auth-User-Id", "").strip()
+    if email and not user_id:
+        _IDENTITY_SKEW_WARNED = True
+        _logger.warning(
+            "identity header skew: X-Auth-Email present without X-Auth-User-Id — stale nginx or old validator?"
+        )
+
 
 def _session_owner(agent: str, session_id: str) -> str | None:
     return _sessions_store.get_session_owner(agent, session_id)
@@ -33,6 +51,10 @@ def _session_owner(agent: str, session_id: str) -> str | None:
 
 def _record_session(agent: str, session_id: str, user_id: str) -> None:
     _sessions_store.record_session(agent, session_id, user_id)
+
+
+def _touch_session(agent: str, session_id: str) -> None:
+    _sessions_store.touch_session(agent, session_id)
 
 
 def _remember_run_owner(run_id: str, user_id: str) -> None:
@@ -53,17 +75,23 @@ def _scan_frames_for_session(raw: str) -> str | None:
     """Find a session_id in run.completed (or any) SSE data frames."""
     sid = None
     for frame in raw.split("\n\n"):
-        for line in frame.split("\n"):
-            line = line.strip()
-            if not line.startswith("data:"):
-                continue
-            try:
-                ev = json.loads(line[5:].strip())
-            except Exception:
-                continue
-            if isinstance(ev.get("session_id"), str) and ev["session_id"]:
-                sid = ev["session_id"]
+        sid = _scan_frame_for_session(frame) or sid
     return sid
+
+
+def _scan_frame_for_session(frame: str) -> str | None:
+    """Find a session_id in a SINGLE complete SSE frame's data line(s)."""
+    for line in frame.split("\n"):
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            ev = json.loads(line[5:].strip())
+        except Exception:
+            continue
+        if isinstance(ev.get("session_id"), str) and ev["session_id"]:
+            return ev["session_id"]
+    return None
 
 
 def _gateway_base(agent: str) -> str | None:
@@ -197,14 +225,24 @@ async def create_run(agent: str, request: Request):
     if v["decision"] == "flag":
         _emit_guardrail(request, agent, "guardrail.flagged", v, inp[:60])
 
+    _warn_identity_header_skew(request)
+
     # Phase 1 session-ownership gate (fail-closed). Identity-less callers hold
     # the orchestrator bearer key and are inside the trust boundary.
     user_id = request.headers.get("X-Auth-User-Id", "").strip()
     session_id = _extract_session_id_from_body(body)
-    if user_id and session_id and _session_owner(agent, session_id) != user_id:
-        return JSONResponse({"detail": "Session not found"}, status_code=403)
+    owned_continue = False
+    if user_id and session_id:
+        if _session_owner(agent, session_id) != user_id:
+            return JSONResponse({"detail": "Session not found"}, status_code=403)
+        owned_continue = True
 
     status, content = _create_run(agent, body)
+    if owned_continue and status < 300:
+        try:
+            _touch_session(agent, session_id)
+        except Exception:
+            pass
     if user_id and status < 300:
         try:
             run_id = json.loads(content).get("run_id")
@@ -346,17 +384,53 @@ async def run_events(agent: str, run_id: str, request: Request):
                 for chunk in chunks:
                     yield chunk
         else:
-            # NON-GOVERNED PATH: stream each chunk as it arrives; passively scan
-            # a rolling copy for the run.completed session_id to record ownership.
-            tail = b""
-            async for chunk in _stream_upstream(base, run_id):
-                yield chunk
-                tail = (tail + chunk)[-65536:]
+            # NON-GOVERNED PATH: incrementally parse each chunk for a
+            # session_id BEFORE yielding it, then yield the chunk unchanged.
+            # This fixes two bugs the old rolling-64KB-tail approach had:
+            #   (a) a run.completed data line bigger than 64KB used to get
+            #       truncated, so JSON parsing failed and no ownership row was
+            #       ever written (the creator's next message in that thread
+            #       then 403'd with no recovery but the backfill script);
+            #   (b) capture used to happen only in code positioned AFTER the
+            #       loop, so a client disconnect (which cancels this generator
+            #       mid-loop) could strand the session before that code ran.
+            # Parsing must complete BEFORE `yield chunk` (not after): a
+            # generator pauses exactly at yield, so code placed after the
+            # yield for chunk N only resumes when the consumer asks for
+            # chunk N+1 -- which never happens on a disconnect right after
+            # chunk N. Parsing first means capture has already happened by
+            # the time this generator yields (and could be cancelled).
+            #
+            # The buffer holds only the current INCOMPLETE frame (never the
+            # whole run), so there is no size cap. A "\n\n" frame boundary
+            # can itself be split across two chunks; accumulating into
+            # `pending` and re-splitting the COMBINED bytes on every chunk
+            # (rather than splitting each chunk in isolation) handles that
+            # correctly -- everything before the last "\n\n" is one or more
+            # complete frames, and the remainder (no trailing "\n\n" yet)
+            # stays buffered as the new incomplete-frame tail.
             cap_user = run_owner or user_id
-            if cap_user:
-                sid = _scan_frames_for_session(tail.decode("utf-8", "replace"))
-                if sid:
-                    _record_session(agent, sid, cap_user)
+            recorded = False
+            pending = b""
+            async for chunk in _stream_upstream(base, run_id):
+                if not recorded and cap_user:
+                    try:
+                        pending += chunk
+                        if b"\n\n" in pending:
+                            *complete, pending = pending.split(b"\n\n")
+                            for frame_bytes in complete:
+                                sid = _scan_frame_for_session(frame_bytes.decode("utf-8", "replace"))
+                                if sid:
+                                    _record_session(agent, sid, cap_user)
+                                    recorded = True
+                                    break
+                    except Exception:
+                        # Parsing must never affect delivery -- chunk is
+                        # yielded unconditionally below regardless.
+                        _logger.warning(
+                            "incremental session-id parse failed for run %s", run_id, exc_info=True
+                        )
+                yield chunk
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
