@@ -174,12 +174,18 @@ All against the sandbox hostname (`olliesandbox.jnow.io`) before touching `jnow`
   confirm the new thread appears in the thread list, reopen it and confirm
   history loads, delete it and confirm it disappears from the list.
 
-- **Old gateway path is gone:**
+- **Old gateway path no longer proxies:** with the `/gateway-proxy/` nginx
+  location removed, that path falls through to the SPA catch-all and serves
+  `index.html`, so a GET returns **`200` (HTML), not `404`** — the security
+  property is that *no location proxies to a Hermes gateway*, which you confirm
+  by checking the generated config has zero gateway-proxy blocks:
   ```bash
+  # runtime (served by the SPA fallback — expect 200):
   curl -s -o /dev/null -w "%{http_code}\n" \
        https://olliesandbox.jnow.io/gateway-proxy/<agent>/v1/runs
+  # config proof (expect 0):
+  docker exec ollie-dashboard grep -c "location /gateway-proxy" /etc/nginx/agents.conf
   ```
-  Expect `404`.
 
 - **Raw dashboard session reads are blocked:**
   ```bash
