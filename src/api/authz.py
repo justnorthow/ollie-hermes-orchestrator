@@ -53,6 +53,26 @@ def check_agent_access(request: Request, agent_id: str, cfg) -> JSONResponse | N
     return None if can_reach(tier, scope, manager_visible) else _FORBIDDEN
 
 
+def admin_denied(request: Request) -> JSONResponse | None:
+    """403 if an IDENTIFIED caller is below account_admin; None otherwise.
+    Identity-less callers (no X-Auth-User-Id) are trusted internal → None.
+    Config absent (unit tests mounting routers without app.state.config) → None
+    (skip; same trust boundary as check_agent_access / _rbac_denied)."""
+    user_id = _user_id(request)
+    if not user_id:
+        return None
+    # request.app can KeyError on a bare scope (see runs.py _rbac_denied); guard it.
+    try:
+        app = request.app
+        cfg = getattr(app.state, "config", None)
+    except Exception:
+        return None
+    if cfg is None:
+        return None
+    tier = roles.resolve_tier(cfg.instance_id, user_id)
+    return None if roles.is_at_least(tier, "account_admin") else _FORBIDDEN
+
+
 def reachable_agent_ids(request: Request, cfg) -> list[str]:
     user_id = _user_id(request)
     entries = read_agents(_env_path(cfg))
