@@ -34,6 +34,38 @@ Shared Supabase project ref: `kpdqhntsvjzhqjeupzsj`.
 
 This only needs to happen once — it's the same shared project for both boxes.
 
+## 1a. Dashboard session token (REQUIRED)
+
+The native Hermes dashboard requires its session token on `/api/sessions` **even
+on a loopback bind** (`--insecure` waives auth only for non-loopback hosts). Left
+unset, that token randomizes on every dashboard restart, and both the backfill and
+the live session read/delete endpoints get `401`. Fix it with one stable,
+operator-set token shared across all dashboards + the orchestrator.
+
+Per box:
+
+```bash
+# 1. Generate one stable token.
+TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+
+# 2. Set HERMES_DASHBOARD_SESSION_TOKEN=$TOKEN in the Environment of EVERY
+#    per-profile dashboard unit (hermes-dashboard, hermes-dashboard-<profile>...),
+#    e.g. a systemd drop-in per unit, then reload + restart them:
+systemctl --user daemon-reload
+systemctl --user restart 'hermes-dashboard*'
+
+# 3. Hand the SAME value to the orchestrator (and thus the backfill) in
+#    ~/.config/ollie-orchestrator/.env:
+#      HERMES_DASHBOARD_TOKEN=$TOKEN
+```
+
+Verify a dashboard now accepts it (expect `200`):
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" \
+  -H "X-Hermes-Session-Token: $TOKEN" http://127.0.0.1:9119/api/sessions?limit=1
+```
+
 ## 2. Find John's user UUID
 
 Supabase dashboard → **Authentication** → **Users** → find John's login →
