@@ -99,6 +99,18 @@ def _create_run(agent: str, body: bytes) -> tuple[int, bytes]:
     return resp.status_code, resp.content
 
 
+def _gateway_post(agent: str, path: str, body: bytes = b"") -> tuple[int, bytes]:
+    base = _gateway_base(agent)
+    resp = httpx.post(f"{base}{path}", content=body, headers=_gateway_headers(), timeout=30.0)
+    return resp.status_code, resp.content
+
+
+def _gateway_get(agent: str, path: str) -> tuple[int, bytes]:
+    base = _gateway_base(agent)
+    resp = httpx.get(f"{base}{path}", headers=_gateway_headers(), timeout=30.0)
+    return resp.status_code, resp.content
+
+
 async def _stream_upstream(base: str, run_id: str) -> AsyncIterator[bytes]:
     headers = {**_gateway_headers(), "accept": "text/event-stream"}
     async with httpx.AsyncClient(timeout=None) as client:
@@ -203,16 +215,58 @@ async def create_run(agent: str, request: Request):
     return Response(content=content, status_code=status, media_type="application/json")
 
 
+def _run_owner_gate(request: Request, run_id: str) -> JSONResponse | None:
+    user_id = request.headers.get("X-Auth-User-Id", "").strip()
+    owner = _RUN_OWNERS.get(run_id)
+    if owner and user_id and owner != user_id:
+        return JSONResponse({"detail": "Run not found"}, status_code=403)
+    return None
+
+
+@router.post("/v1/runs/{agent}/{run_id}/stop")
+async def stop_run(agent: str, run_id: str, request: Request):
+    if not _gateway_base(agent):
+        return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
+    denied = _run_owner_gate(request, run_id)
+    if denied:
+        return denied
+    status, content = _gateway_post(agent, f"/v1/runs/{run_id}/stop")
+    return Response(content=content, status_code=status, media_type="application/json")
+
+
+@router.post("/v1/runs/{agent}/{run_id}/approval")
+async def approve_run(agent: str, run_id: str, request: Request):
+    if not _gateway_base(agent):
+        return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
+    denied = _run_owner_gate(request, run_id)
+    if denied:
+        return denied
+    body = await request.body()
+    status, content = _gateway_post(agent, f"/v1/runs/{run_id}/approval", body)
+    return Response(content=content, status_code=status, media_type="application/json")
+
+
+@router.get("/v1/runs/{agent}")
+async def list_runs(agent: str, request: Request):
+    if not _gateway_base(agent):
+        return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
+    qs = request.url.query
+    path = f"/v1/runs?{qs}" if qs else "/v1/runs"
+    status, content = _gateway_get(agent, path)
+    return Response(content=content, status_code=status, media_type="application/json")
+
+
 @router.get("/v1/runs/{agent}/{run_id}/events")
 async def run_events(agent: str, run_id: str, request: Request):
     base = _gateway_base(agent)
     if not base:
         return JSONResponse({"detail": "Run proxy not configured"}, status_code=503)
 
+    denied = _run_owner_gate(request, run_id)
+    if denied:
+        return denied
     user_id = request.headers.get("X-Auth-User-Id", "").strip()
     run_owner = _RUN_OWNERS.get(run_id)
-    if run_owner and user_id and run_owner != user_id:
-        return JSONResponse({"detail": "Run not found"}, status_code=403)
 
     email = request.headers.get("X-Auth-Email", "").strip()
     role = request.headers.get("X-Auth-Role", "").strip() or "agent"
