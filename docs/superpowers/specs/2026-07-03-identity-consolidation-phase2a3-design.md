@@ -38,69 +38,87 @@ This is confusing and duplicative.
   sources.** `user_roles` (tier) + `user_tags` (tags) become the single source of
   truth, both served by `whoami` and one frontend hook.
 
-## 3. Data model
+## 3. Data model — tags are GLOBAL, tier stays per-instance
 
-New Supabase migration (`0013_user_tags.sql`):
+**Key constraint (discovered from the auth hook):** the JWT is issued once per login
+and is instance-blind (one cookie shared across `*.jnow.io`), and `governance_events`
+is a single shared table. Therefore:
+
+- **`tier` is per-instance and NEVER a JWT claim** — it is always resolved
+  server-side by the orchestrator via `resolve_tier(instance_id, user_id)` (as Phase
+  2a already does). Nothing about tier changes here.
+- **Tags are GLOBAL** — a functional attribute of the person (a compliance officer is
+  one regardless of which box), so they can safely ride the instance-blind JWT and
+  back the global governance table.
+
+New Supabase migration (`0013_user_tags.sql`) — **global** (no `instance_id`):
 
 ```sql
 create table if not exists public.user_tags (
-  instance_id  text not null,
   user_id      uuid not null,
   tag          text not null,
   created_at   timestamptz not null default now(),
-  primary key (instance_id, user_id, tag)
+  primary key (user_id, tag)
 );
 alter table public.user_tags enable row level security;
--- SELECT own tags (defense in depth; orchestrator reads via service role).
+-- SELECT own tags (defense in depth; orchestrator reads via service role;
+-- the auth hook's supabase_auth_admin gets a permissive read policy like 0009 did
+-- for profiles).
 create policy user_tags_select_own on public.user_tags
   for select to authenticated using (user_id = auth.uid());
+create policy user_tags_auth_admin_read on public.user_tags
+  as permissive for select to supabase_auth_admin using (true);
 -- No write policy → service-role (orchestrator admin API) writes only.
 ```
 
-Instance-scoped (shared Supabase project), same convention as `user_roles`.
-
 ## 4. Data migration of `profiles.role`
 
-A one-time, idempotent migration (SQL in the same `0013` file, or a companion
-`0014_migrate_profiles_role.sql`) mapping existing `profiles.role` rows into the new
-tables for the current instance(s). Because `profiles` has no `instance_id`, the
-migration is parameterized per instance (run once per instance_id, or default the
-mapping to the primary instance and let the admin API re-assign):
+A one-time, idempotent migration. `profiles.role` is global with DB values
+`agent | compliance | marketing | admin` (verified in `0001_identity.sql` — note it
+is NOT `broker`; the frontend `Role` type's `broker` never matched the DB).
 
-- `broker` → `user_roles.tier = 'account_admin'`
-- `agent` → `user_roles.tier = 'member'`
-- `compliance` → `user_roles.tier = 'member'` + `user_tags` `compliance`
-- `marketing` → `user_roles.tier = 'member'` + `user_tags` `marketing`
+- **Tags (global) — always applied:** `compliance` role → `user_tags(user_id,
+  'compliance')`; `marketing` role → `user_tags(user_id, 'marketing')`.
+- **Tier (per-instance) — applied per target instance:** `admin` →
+  `user_roles(<instance>, user_id, 'account_admin')`; `agent`/`compliance`/`marketing`
+  → `member`. Because `user_roles` needs an `instance_id` and `profiles` has none, the
+  tier half is a **parameterized** step run once per instance_id (the runbook runs it
+  for `sandbox`, then `jnow`). The tag half is global (runs once).
 
-`on conflict do nothing` so it never clobbers a tier already assigned via the Phase
-2a admin API. The migration is documented in the runbook as an explicit, reviewed
-step (not silent), since it sets authority.
+Both halves use `on conflict do nothing` so they never clobber a tier/tag already set
+via the Phase 2a admin API. Documented in the runbook as an explicit, reviewed step
+(it sets authority).
 
 ## 5. Auth hook + governance RLS (the risky, staged part)
 
-The Supabase custom-access-token hook currently derives the JWT `user_role` claim
-from `profiles.role`. Change it to ALSO emit, from the new tables:
+The `custom_access_token_hook` (defined in `0001_identity.sql`) currently reads
+`profiles.role` and stamps `user_role`. It only needs to additionally stamp the
+GLOBAL `tags` array (tier is NOT stamped — it's per-instance, orchestrator-resolved).
 
-- `tier` (from `user_roles`, default `member`)
-- `tags` (array, from `user_tags`, default `[]`)
+Hook change: `tags` (jsonb array, from `user_tags` for the user, default `[]`),
+emitted alongside the existing `user_role`. Grant `supabase_auth_admin` a read policy
+on `user_tags` (mirrors 0009's fix for `profiles`).
 
 **Staged for safety (a broken hook blocks all logins):**
 
-1. **Additive first:** the hook emits the NEW claims (`tier`, `tags`) WHILE STILL
-   emitting the old `user_role` — no RLS change yet. Deploy + verify logins work and
-   the claims appear.
-2. **RLS cutover second, after the hook is proven:** `governance_events` RLS moves
-   from `user_role in ('broker','compliance')` to:
-   `coalesce(auth.jwt() ->> 'tier','') in ('account_admin','platform_operator')
-    OR (auth.jwt() -> 'tags') ? 'compliance'
+1. **Additive first:** the hook emits `tags` WHILE STILL emitting `user_role` — no
+   RLS change. Deploy + verify logins work and the `tags` claim appears.
+2. **RLS cutover second, after the hook is proven:** `governance_events` RLS
+   (`0005`) moves from `coalesce(auth.jwt() ->> 'user_role','') in
+   ('broker','compliance')` to read the tag:
+   `(auth.jwt() -> 'tags') ? 'compliance'
+    OR (auth.jwt() ->> 'user_role') = 'admin'
     OR user_email = coalesce(auth.jwt() ->> 'email','')`.
-3. **Retire `user_role` last:** once RLS + frontend read the new claims, drop the
-   old `user_role` emission from the hook.
+   (Governance "see all" = compliance-tagged OR the global `admin` functional role;
+   both are global, matching the shared/instance-blind governance table. Per-instance
+   `account_admin` authority is deliberately NOT a governance-read grant — governance
+   visibility is a functional/compliance concern, not a per-box admin one.)
+3. **Retire `user_role` last (optional/deferred):** once nothing reads `user_role`,
+   the old emission can be dropped. Since the `admin` functional value still usefully
+   feeds governance step 2, retiring `user_role` is deferred until tags fully cover
+   it — this phase keeps it.
 
-The exact current hook definition must be located first (Supabase dashboard config or
-an existing `development/core` migration) — a plan investigation step. Design it
-backward-tolerant: missing `user_roles`/`user_tags` rows → `tier='member'`,
-`tags=[]`.
+Design the hook backward-tolerant: missing `user_tags` rows → `tags=[]`.
 
 ## 6. whoami extension
 
@@ -111,8 +129,8 @@ backward-tolerant: missing `user_roles`/`user_tags` rows → `tier='member'`,
   "tags": ["compliance"], "reachableAgentIds": ["default"] }
 ```
 
-`src/api/roles.py` gains `list_user_tags(instance_id, user_id) -> list[str]`
-(cached like `resolve_tier`, fail-closed to `[]`) and `set_user_tags(...)` for the
+`src/api/roles.py` gains `list_user_tags(user_id) -> list[str]` (GLOBAL — no
+instance_id; cached, fail-closed to `[]`) and `set_user_tags(user_id, tags)` for the
 admin API. `src/api/admin.py`'s `whoami` includes `tags`; `GET /v1/admin/users`
 includes each user's tags; a `PUT /v1/admin/users/{id}/tags` sets them
 (account_admin+, governance-audited). (The admin *UI* for tags is 2b; the API lands
