@@ -81,3 +81,30 @@ def test_remove_agent_drops_entry(tmp_path):
     remove_agent(env, "a")
     entries = read_agents(env)
     assert [e.id for e in entries] == ["b"]
+
+
+def test_entry_parses_scope_and_manager_visible():
+    from src.agents_json import _json_to_entry
+    e = _json_to_entry({"id": "default", "name": "Ollie",
+                        "gatewayUrl": "http://h:8642", "dashboardUrl": "http://h:9119",
+                        "scope": "user", "manager_visible": True})
+    assert e.scope == "user"
+    assert e.manager_visible is True
+
+
+def test_entry_defaults_scope_company():
+    from src.agents_json import _json_to_entry
+    e = _json_to_entry({"id": "pam", "name": "Pam",
+                        "gatewayUrl": "http://h:8643", "dashboardUrl": "http://h:9121"})
+    assert e.scope == "company"
+    assert e.manager_visible is False
+
+
+def test_entry_roundtrips_scope():
+    from src.agents_json import AgentEntry, _entry_to_json, _json_to_entry
+    e = AgentEntry(id="pam", name="Pam", gateway_port=8643, dashboard_port=9121,
+                   color="#888888", model=None, scope="company", manager_visible=True)
+    out = _entry_to_json(e)
+    assert out["scope"] == "company"
+    assert out["manager_visible"] is True
+    assert _json_to_entry(out).manager_visible is True

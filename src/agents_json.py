@@ -17,6 +17,8 @@ class AgentEntry:
     dashboard_port: int
     color: str
     model: Optional[str] = None
+    scope: str = "company"
+    manager_visible: bool = False
 
 
 def _gateway_url(port: int) -> str:
@@ -37,6 +39,8 @@ def _entry_to_json(e: AgentEntry) -> dict:
     }
     if e.model:
         d["model"] = e.model
+    d["scope"] = e.scope
+    d["manager_visible"] = e.manager_visible
     return d
 
 
@@ -48,6 +52,8 @@ def _json_to_entry(d: dict) -> AgentEntry:
         dashboard_port=int(d["dashboardUrl"].rsplit(":", 1)[1]),
         color=d.get("color", "#888888"),
         model=d.get("model"),
+        scope=d.get("scope", "company"),
+        manager_visible=bool(d.get("manager_visible", False)),
     )
 
 
