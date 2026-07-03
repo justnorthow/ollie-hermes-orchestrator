@@ -28,7 +28,7 @@ def main() -> int:
     user_id = os.environ.get("BACKFILL_USER_ID", "").strip()
     sb_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
     sb_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-    dash_map = json.loads(os.environ.get("HERMES_DASHBOARD_URLS", "{}"))
+    dash_map = json.loads(os.environ.get("HERMES_DASHBOARD_URLS") or "{}")
     if not (user_id and sb_url and sb_key and dash_map):
         print("Missing env: BACKFILL_USER_ID / SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / HERMES_DASHBOARD_URLS")
         return 1
