@@ -100,6 +100,34 @@ def test_missing_user_role_defaults_to_agent(client):
     assert r.headers["X-Auth-Role"] == "agent"
 
 
+def test_validate_returns_user_id_header(client):
+    now = int(time.time())
+    access = jwt.encode(
+        {"aud": "authenticated", "iss": ISSUER, "sub": "11111111-2222-3333-4444-555555555555",
+         "email": "a@b.com", "user_role": "agent", "iat": now, "exp": now + 60},
+        SECRET, algorithm="HS256",
+    )
+    val = "base64-" + base64.urlsafe_b64encode(
+        json.dumps({"access_token": access}).encode()).rstrip(b"=").decode()
+    r = client.get("/v1/auth/validate", cookies={OUR_COOKIE: val})
+    assert r.status_code == 200
+    assert r.headers["X-Auth-User-Id"] == "11111111-2222-3333-4444-555555555555"
+
+
+def test_validate_omits_user_id_header_when_no_sub(client):
+    now = int(time.time())
+    access = jwt.encode(
+        {"aud": "authenticated", "iss": ISSUER,
+         "email": "a@b.com", "user_role": "agent", "iat": now, "exp": now + 60},
+        SECRET, algorithm="HS256",
+    )
+    val = "base64-" + base64.urlsafe_b64encode(
+        json.dumps({"access_token": access}).encode()).rstrip(b"=").decode()
+    r = client.get("/v1/auth/validate", cookies={OUR_COOKIE: val})
+    assert r.status_code == 200
+    assert "X-Auth-User-Id" not in r.headers
+
+
 def test_chunked_cookie_is_reassembled(client):
     val = _make_cookie_value(email="c@x.com")
     mid = len(val) // 2
