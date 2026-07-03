@@ -50,6 +50,7 @@ def whoami(request: Request):
     tier = roles.resolve_tier(cfg.instance_id, uid)
     label = roles.get_labels(cfg.instance_id).get(tier, tier)
     return {"userId": uid, "tier": tier, "label": label,
+            "tags": roles.list_user_tags(uid),
             "reachableAgentIds": authz.reachable_agent_ids(request, cfg)}
 
 
@@ -84,7 +85,7 @@ def admin_users(request: Request):
     for uid, email in emails.items():
         tier = role_map.get(uid, "member")
         out.append({"userId": uid, "email": email, "tier": tier,
-                    "label": labels.get(tier, tier)})
+                    "label": labels.get(tier, tier), "tags": roles.list_user_tags(uid)})
     return out
 
 
@@ -112,6 +113,20 @@ def set_user_role(user_id: str, body: RoleBody, request: Request):
     roles.set_tier(_cfg(request).instance_id, user_id, body.tier, caller_uid)
     _emit_admin_event(request, "role.set", user_id, body.tier, caller_uid, caller_tier)
     return {"userId": user_id, "tier": body.tier}
+
+
+class TagsBody(BaseModel):
+    tags: list[str]
+
+
+@router.put("/v1/admin/users/{user_id}/tags")
+def set_user_tags_route(user_id: str, body: TagsBody, request: Request):
+    caller, deny = _require_admin(request)
+    if deny:
+        return deny
+    roles.set_user_tags(user_id, body.tags)
+    _emit_admin_event(request, "tags.set", user_id, ",".join(body.tags), caller[0], caller[1])
+    return {"userId": user_id, "tags": body.tags}
 
 
 @router.get("/v1/admin/role-labels")
