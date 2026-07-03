@@ -24,6 +24,7 @@ def cfg(tmp_path):
         hermes_profiles_dir=tmp_path / ".hermes" / "profiles",
         systemd_user_dir=tmp_path / ".config" / "systemd" / "user",
         audit_log_path=tmp_path / "audit.log",
+        instance_id="default",
     )
 
 

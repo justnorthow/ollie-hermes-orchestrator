@@ -13,6 +13,7 @@ from src.api.profile import router as profile_router
 from src.api.market_data import router as market_data_router
 from src.api.runs import router as runs_router
 from src.api.sessions import router as sessions_router
+from src.api.admin import router as admin_router
 
 _logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(market_data_router)
     app.include_router(runs_router)
     app.include_router(sessions_router)
+    app.include_router(admin_router)
     return app
 
 

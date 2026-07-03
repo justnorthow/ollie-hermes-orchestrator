@@ -2,6 +2,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from src.agents_json import read_agents
+from src.api import authz
 from src.auth import require_bearer
 from src.audit import audit
 from src.config import Config
@@ -48,6 +49,9 @@ async def get_agent(agent_id: str, request: Request) -> dict:
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def create(body: CreateAgent, request: Request) -> StreamingResponse:
+    denied = authz.admin_denied(request)
+    if denied:
+        return denied
     cfg = request.app.state.config
     api_key = request.app.state.hermes_gateway_key
     actor_ip = request.client.host if request.client else "unknown"
@@ -84,6 +88,9 @@ async def create(body: CreateAgent, request: Request) -> StreamingResponse:
 
 @router.delete("/{agent_id}", status_code=204)
 async def delete(agent_id: str, request: Request):
+    denied = authz.admin_denied(request)
+    if denied:
+        return denied
     cfg = request.app.state.config
     actor_ip = request.client.host if request.client else "unknown"
     result = await delete_agent(agent_id)
@@ -98,6 +105,9 @@ async def delete(agent_id: str, request: Request):
 
 @router.post("/{agent_id}/identity")
 async def set_identity(agent_id: str, body: SetIdentityRequest, request: Request) -> dict:
+    denied = authz.admin_denied(request)
+    if denied:
+        return denied
     if not body.soulContent.strip():
         raise HTTPException(status_code=400, detail="soulContent must be non-empty")
     cfg = request.app.state.config
@@ -128,6 +138,9 @@ async def set_identity(agent_id: str, body: SetIdentityRequest, request: Request
 
 @router.patch("/{agent_id}")
 async def patch(agent_id: str, body: UpdateAgent, request: Request) -> dict:
+    denied = authz.admin_denied(request)
+    if denied:
+        return denied
     cfg = request.app.state.config
     actor_ip = request.client.host if request.client else "unknown"
     req = UpdateRequest(**body.model_dump(exclude_unset=True))

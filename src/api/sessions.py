@@ -15,6 +15,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
+from src.api import authz
 from src.auth import require_bearer
 
 _logger = logging.getLogger(__name__)
@@ -22,6 +23,21 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(tags=["sessions"], dependencies=[Depends(require_bearer)])
 
 _NOT_FOUND = JSONResponse({"detail": "Session not found"}, status_code=403)
+
+# Logged once per process if _rbac_denied ever skips enforcement because
+# app.state.config is absent (mirrors src/api/runs.py's warn-once pattern).
+# Expected in unit tests (no ASGI app wiring); grep-able so a genuine
+# production occurrence (config missing on a real request) doesn't silently
+# skip RBAC forever.
+_RBAC_CONFIG_SKIP_WARNED = False
+
+
+def _warn_rbac_config_skip() -> None:
+    global _RBAC_CONFIG_SKIP_WARNED
+    if _RBAC_CONFIG_SKIP_WARNED:
+        return
+    _RBAC_CONFIG_SKIP_WARNED = True
+    _logger.warning("RBAC check skipped: app.state.config absent")
 
 
 def _dashboard_base(agent: str) -> str | None:
@@ -167,8 +183,26 @@ def _identity(request: Request) -> str:
     return request.headers.get("X-Auth-User-Id", "").strip()
 
 
+def _rbac_denied(request: Request, agent: str) -> JSONResponse | None:
+    # Mirrors src/api/runs.py::_rbac_denied -- some unit tests drive handlers
+    # with a bare Request built from a scope dict with no "app" key at all, so
+    # request.app itself can raise; guard both that and a missing config.
+    try:
+        app = request.app
+    except Exception:
+        return None
+    cfg = getattr(app.state, "config", None)
+    if cfg is None:
+        _warn_rbac_config_skip()
+        return None
+    return authz.check_agent_access(request, agent, cfg)
+
+
 @router.get("/v1/sessions/{agent}")
 def list_sessions(agent: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     user_id = _identity(request)
     if not user_id:
         return _NOT_FOUND
@@ -186,6 +220,9 @@ def list_sessions(agent: str, request: Request):
 
 @router.get("/v1/sessions/{agent}/{session_id}/messages")
 def session_messages(agent: str, session_id: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     user_id = _identity(request)
     if not user_id or get_session_owner(agent, session_id) != user_id:
         return _NOT_FOUND
@@ -197,6 +234,9 @@ def session_messages(agent: str, session_id: str, request: Request):
 
 @router.delete("/v1/sessions/{agent}/{session_id}")
 def delete_session(agent: str, session_id: str, request: Request):
+    denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
     user_id = _identity(request)
     if not user_id or get_session_owner(agent, session_id) != user_id:
         return _NOT_FOUND

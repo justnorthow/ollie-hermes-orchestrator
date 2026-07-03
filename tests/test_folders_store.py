@@ -12,6 +12,7 @@ def _cfg(tmp_path: Path) -> Config:
         hermes_profiles_dir=tmp_path / "hermes" / "profiles",
         systemd_user_dir=tmp_path / "systemd",
         audit_log_path=tmp_path / "audit.log",
+        instance_id="default",
     )
 
 

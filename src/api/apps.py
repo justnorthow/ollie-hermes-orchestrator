@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from src.agents_json import read_agents
+from src.api import authz
 from src.auth import require_bearer
 from src.config import Config
 from src.lock import file_lock
@@ -73,6 +74,9 @@ async def list_apps(agent_id: str, request: Request) -> dict:
 
 @router.post("/{agent_id}/apps", status_code=201)
 async def register_app(agent_id: str, body: CreateApp, request: Request) -> dict:
+    denied = authz.admin_denied(request)
+    if denied:
+        return denied
     cfg = request.app.state.config
     _require_agent(agent_id, cfg)
     if not body.id.strip():
@@ -93,6 +97,9 @@ async def register_app(agent_id: str, body: CreateApp, request: Request) -> dict
 
 @router.delete("/{agent_id}/apps/{app_id}", status_code=204)
 async def delete_app(agent_id: str, app_id: str, request: Request) -> None:
+    denied = authz.admin_denied(request)
+    if denied:
+        return denied
     cfg = request.app.state.config
     _require_agent(agent_id, cfg)
     apps = _read_apps(agent_id, cfg)
