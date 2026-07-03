@@ -158,3 +158,67 @@ def _now_iso() -> str:
     # UTC ISO-8601; imported lazily so tests can monkeypatch time without import churn.
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+# --- Global user tags (functional attribute of the person; no instance_id) ---
+
+_tags_cache: dict[str, tuple[list[str], float]] = {}  # user_id -> (tags, expiry)
+
+
+def _fetch_tags(user_id: str) -> list[str]:
+    sb = _sb()
+    if not sb:
+        return []
+    url, key = sb
+    resp = httpx.get(
+        f"{url}/rest/v1/user_tags",
+        params={"user_id": f"eq.{user_id}", "select": "tag"},
+        headers=_sb_headers(key), timeout=10.0,
+    )
+    resp.raise_for_status()
+    return sorted(r["tag"] for r in resp.json())
+
+
+def list_user_tags(user_id: str) -> list[str]:
+    """GLOBAL functional tags for a user; cached; fail-closed to [] on any error."""
+    now = time.monotonic()
+    hit = _tags_cache.get(user_id)
+    if hit and hit[1] > now:
+        return hit[0]
+    try:
+        tags = _fetch_tags(user_id)
+    except Exception:
+        _logger.warning("list_user_tags failed; defaulting []", exc_info=True)
+        tags = []
+    _tags_cache[user_id] = (tags, now + _CACHE_TTL)
+    return tags
+
+
+def invalidate_tags(user_id: str | None = None) -> None:
+    if user_id is None:
+        _tags_cache.clear()
+    else:
+        _tags_cache.pop(user_id, None)
+
+
+def set_user_tags(user_id: str, tags: list[str]) -> None:
+    """Replace a user's global tags (delete-all + insert). Service role."""
+    sb = _sb()
+    if not sb:
+        raise RuntimeError("Supabase not configured")
+    url, key = sb
+    # Delete existing, then insert the new set (small sets; simplest correct).
+    httpx.delete(
+        f"{url}/rest/v1/user_tags",
+        params={"user_id": f"eq.{user_id}"},
+        headers=_sb_headers(key), timeout=10.0,
+    ).raise_for_status()
+    clean = [t for t in {str(x).strip() for x in tags} if t]
+    if clean:
+        httpx.post(
+            f"{url}/rest/v1/user_tags",
+            headers={**_sb_headers(key), "Prefer": "return=minimal"},
+            json=[{"user_id": user_id, "tag": t} for t in clean],
+            timeout=10.0,
+        ).raise_for_status()
+    invalidate_tags(user_id)
