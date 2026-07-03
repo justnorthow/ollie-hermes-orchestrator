@@ -12,14 +12,34 @@ import sys
 import httpx
 
 
+def _first_str(s: dict, *keys: str) -> str | None:
+    """First present, non-empty string value among keys, else None."""
+    for key in keys:
+        val = s.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return None
+
+
 def rows_from_sessions(agent: str, sessions: list[dict], user_id: str) -> list[dict]:
     rows = []
     for s in sessions:
         sid = s.get("id")
         if not isinstance(sid, str) or not sid:
             continue
-        rows.append({"agent_id": agent, "hermes_session_id": sid,
-                     "user_id": user_id, "title": s.get("title") or None})
+        row = {"agent_id": agent, "hermes_session_id": sid,
+               "user_id": user_id, "title": s.get("title") or None}
+        # Hermes dashboard /api/sessions items carry camelCase createdAt/updatedAt
+        # (see HermesSession in the frontend); handle snake_case variants
+        # defensively too. Omit the keys entirely when absent so DB defaults
+        # (now()) apply, rather than forcing a scrambled backfill timestamp.
+        created_at = _first_str(s, "createdAt", "created_at", "started_at")
+        if created_at:
+            row["created_at"] = created_at
+        last_active_at = _first_str(s, "updatedAt", "updated_at", "last_active", "last_active_at")
+        if last_active_at:
+            row["last_active_at"] = last_active_at
+        rows.append(row)
     return rows
 
 
