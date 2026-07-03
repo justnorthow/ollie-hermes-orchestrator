@@ -50,3 +50,33 @@ def test_allowed_agent_passes_rbac(app_with_config, monkeypatch):
     r = app_with_config.post("/v1/runs/default", content=b'{"input":"hi"}',
                              headers={"X-Auth-User-Id": MEMBER})
     assert r.status_code == 200
+
+
+def test_runs_rbac_denied_skips_and_warns_once_when_config_absent(monkeypatch):
+    # No app.state.config at all -- _rbac_denied must still skip (return None),
+    # and it should warn exactly once per process via the module flag, not spam.
+    monkeypatch.setattr(runs, "_RBAC_CONFIG_SKIP_WARNED", False)
+    warnings = []
+    monkeypatch.setattr(runs._logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+
+    class _Request:
+        app = types.SimpleNamespace(state=types.SimpleNamespace())  # no .config attr
+
+    assert runs._rbac_denied(_Request(), "default") is None
+    assert runs._rbac_denied(_Request(), "default") is None
+    assert len(warnings) == 1
+    assert "RBAC check skipped" in warnings[0]
+
+
+def test_sessions_rbac_denied_skips_and_warns_once_when_config_absent(monkeypatch):
+    monkeypatch.setattr(sessions_mod, "_RBAC_CONFIG_SKIP_WARNED", False)
+    warnings = []
+    monkeypatch.setattr(sessions_mod._logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+
+    class _Request:
+        app = types.SimpleNamespace(state=types.SimpleNamespace())  # no .config attr
+
+    assert sessions_mod._rbac_denied(_Request(), "default") is None
+    assert sessions_mod._rbac_denied(_Request(), "default") is None
+    assert len(warnings) == 1
+    assert "RBAC check skipped" in warnings[0]

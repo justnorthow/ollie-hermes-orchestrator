@@ -103,8 +103,14 @@ def set_user_role(user_id: str, body: RoleBody, request: Request):
     # Only a platform_operator may mint a platform_operator.
     if body.tier == "platform_operator" and not roles.is_at_least(caller_tier, "platform_operator"):
         return _FORBIDDEN
+    target_tier = roles.resolve_tier(_cfg(request).instance_id, user_id)
+    # A caller may not modify a user at or above their own tier, nor assign a tier
+    # at or above their own — except a platform_operator, who may do anything.
+    if not roles.is_at_least(caller_tier, "platform_operator"):
+        if roles.is_at_least(target_tier, caller_tier) or roles.is_at_least(body.tier, caller_tier):
+            return _FORBIDDEN
     roles.set_tier(_cfg(request).instance_id, user_id, body.tier, caller_uid)
-    _emit_admin_event(request, "role.set", user_id, body.tier, caller_uid)
+    _emit_admin_event(request, "role.set", user_id, body.tier, caller_uid, caller_tier)
     return {"userId": user_id, "tier": body.tier}
 
 
@@ -123,11 +129,11 @@ def put_role_labels(body: dict, request: Request):
         return deny
     labels = {t: str(l) for t, l in body.items() if t in roles.TIERS}
     roles.set_labels(_cfg(request).instance_id, labels)
-    _emit_admin_event(request, "role_labels.set", None, ",".join(labels), caller[0])
+    _emit_admin_event(request, "role_labels.set", None, ",".join(labels), caller[0], caller[1])
     return roles.get_labels(_cfg(request).instance_id)
 
 
-def _emit_admin_event(request, event_type, target_user, detail, actor) -> None:
+def _emit_admin_event(request, event_type, target_user, detail, actor, actor_tier) -> None:
     """Best-effort governance event for an admin write. Never raises."""
     try:
         url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
@@ -138,7 +144,7 @@ def _emit_admin_event(request, event_type, target_user, detail, actor) -> None:
             f"{url}/rest/v1/governance_events",
             headers={"apikey": key, "Authorization": f"Bearer {key}",
                      "Content-Type": "application/json", "Prefer": "return=minimal"},
-            json={"user_email": actor or "", "user_role": "account_admin",
+            json={"user_email": actor or "", "user_role": actor_tier,
                   "app": "admin", "event_type": event_type, "status": "ok",
                   "title": target_user, "findings": [], "content": detail, "run_id": None},
             timeout=10.0,

@@ -24,6 +24,21 @@ router = APIRouter(tags=["sessions"], dependencies=[Depends(require_bearer)])
 
 _NOT_FOUND = JSONResponse({"detail": "Session not found"}, status_code=403)
 
+# Logged once per process if _rbac_denied ever skips enforcement because
+# app.state.config is absent (mirrors src/api/runs.py's warn-once pattern).
+# Expected in unit tests (no ASGI app wiring); grep-able so a genuine
+# production occurrence (config missing on a real request) doesn't silently
+# skip RBAC forever.
+_RBAC_CONFIG_SKIP_WARNED = False
+
+
+def _warn_rbac_config_skip() -> None:
+    global _RBAC_CONFIG_SKIP_WARNED
+    if _RBAC_CONFIG_SKIP_WARNED:
+        return
+    _RBAC_CONFIG_SKIP_WARNED = True
+    _logger.warning("RBAC check skipped: app.state.config absent")
+
 
 def _dashboard_base(agent: str) -> str | None:
     """Per-agent Hermes dashboard base URL. HERMES_DASHBOARD_URLS is a JSON map
@@ -178,6 +193,7 @@ def _rbac_denied(request: Request, agent: str) -> JSONResponse | None:
         return None
     cfg = getattr(app.state, "config", None)
     if cfg is None:
+        _warn_rbac_config_skip()
         return None
     return authz.check_agent_access(request, agent, cfg)
 

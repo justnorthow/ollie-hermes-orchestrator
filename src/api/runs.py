@@ -32,6 +32,20 @@ _RUN_OWNERS_MAX = 5000
 # which silently skips the Phase 1 ownership gate below.
 _IDENTITY_SKEW_WARNED = False
 
+# Logged once per process if _rbac_denied ever skips enforcement because
+# app.state.config is absent. Expected in unit tests (no ASGI app wiring);
+# grep-able so a genuine production occurrence (config missing on a real
+# request) doesn't silently skip RBAC forever.
+_RBAC_CONFIG_SKIP_WARNED = False
+
+
+def _warn_rbac_config_skip() -> None:
+    global _RBAC_CONFIG_SKIP_WARNED
+    if _RBAC_CONFIG_SKIP_WARNED:
+        return
+    _RBAC_CONFIG_SKIP_WARNED = True
+    _logger.warning("RBAC check skipped: app.state.config absent")
+
 
 def _rbac_denied(request: Request, agent: str) -> JSONResponse | None:
     # Some unit tests drive handlers with a bare Starlette Request built from a
@@ -44,6 +58,7 @@ def _rbac_denied(request: Request, agent: str) -> JSONResponse | None:
         return None
     cfg = getattr(app.state, "config", None)
     if cfg is None:
+        _warn_rbac_config_skip()
         return None
     return authz.check_agent_access(request, agent, cfg)
 
