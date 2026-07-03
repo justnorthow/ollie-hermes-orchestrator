@@ -11,6 +11,10 @@ Roll out to the **sandbox box first** (`ollie@178.105.216.167`,
 `olliesandbox.jnow.io`). Only move to `jnow` (`ollie.jnow.io`) after every
 sandbox smoke test in Step 6 passes.
 
+Before starting, record the pre-rollout orchestrator SHA on each box —
+`git rev-parse HEAD` in `~/ollie-hermes-orchestrator` — Rollback (Step 7)
+depends on it.
+
 ## 1. Apply the migration
 
 Migration file: `development/core/supabase/migrations/0011_agent_sessions.sql`
@@ -24,7 +28,9 @@ Shared Supabase project ref: `kpdqhntsvjzhqjeupzsj`.
 2. Paste the full contents of `0011_agent_sessions.sql` and run it — same
    process as prior `development/core` migrations (e.g. `0005_governance_events.sql`).
 3. Confirm: **Table Editor** → `public.agent_sessions` exists, with RLS
-   enabled and a `agent_sessions_select_own` policy on `select`.
+   enabled and a `agent_sessions_select_own` policy on `select`. (That policy
+   name comes from the migration as planned — the file lives in the
+   jnow-workspace repo; if the applied SQL differs, verify against it.)
 
 This only needs to happen once — it's the same shared project for both boxes.
 
@@ -44,6 +50,10 @@ Per box, in the orchestrator's env file (same file that already holds
 # each profile's Hermes dashboard (hermes-dashboard-<profile> or the single
 # hermes-dashboard service on a single-profile box).
 HERMES_DASHBOARD_URLS={"real-estate":"http://127.0.0.1:9119"}
+
+# Multi-profile box: one entry per profile, each pointing at that
+# profile's actual dashboard port, e.g.:
+# HERMES_DASHBOARD_URLS={"real-estate":"http://127.0.0.1:9119","prospecting-agent":"http://127.0.0.1:9120"}
 ```
 
 The orchestrator runs natively on the host (not in a container), so it talks
@@ -182,7 +192,9 @@ Repeat Steps 3-6 there.
 
 ## 7. Rollback
 
-Per box:
+On each box that was rolled out, do BOTH of the following:
+
+Frontend image (per box):
 
 ```bash
 docker tag justnorthow/ollie-hermes-frontend:rollback-pre-sessions \
@@ -190,7 +202,8 @@ docker tag justnorthow/ollie-hermes-frontend:rollback-pre-sessions \
 docker compose up -d
 ```
 
-Orchestrator:
+Orchestrator (per box — use the pre-rollout SHA recorded for this box at the
+start of the procedure):
 
 ```bash
 cd ~/ollie-hermes-orchestrator
