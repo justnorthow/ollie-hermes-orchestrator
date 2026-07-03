@@ -156,28 +156,59 @@ All against the sandbox hostname (`olliesandbox.jnow.io`) before touching `jnow`
   ```
   Expect `403`.
 
-- **Cross-user isolation:** create a throwaway second Supabase user, log in
-  as them.
-  - Thread list is empty (they see none of John's sessions).
-  - Requesting John's session directly:
+- **Cross-user isolation:** these checks validate identity-scoped ownership
+  enforcement in the orchestrator itself. They must run **on-box against
+  `http://127.0.0.1:9123`** (mirroring Step 3's verification), the same way
+  Step 3 talks to the orchestrator directly rather than through the public
+  edge. The public edge hostname (`olliesandbox.jnow.io/orchestrator-proxy/...`)
+  is NOT a valid way to run these: nginx requires a valid session cookie (no
+  cookie -> `401` before the request ever reaches the orchestrator) and,
+  even with a cookie, the `auth_request` mechanism overwrites any hand-set
+  `Authorization`/`X-Auth-User-Id` headers with the logged-in user's own
+  identity — so a hand-crafted "throwaway user" identity never reaches the
+  app. Running these against the edge produces a misleading `401` that looks
+  like a pass/fail on the wrong thing.
+
+  On the box, with a throwaway second Supabase user's UUID (`<throwaway-user-uuid>`,
+  created for this test — do not reuse John's):
+  - Requesting John's session directly, as the throwaway user:
     ```bash
     curl -s -o /dev/null -w "%{http_code}\n" \
          -H "Authorization: Bearer $ORCHESTRATOR_KEY" \
          -H "X-Auth-User-Id: <throwaway-user-uuid>" \
-         https://olliesandbox.jnow.io/orchestrator-proxy/v1/sessions/<agent>/<john-session-id>/messages
+         http://127.0.0.1:9123/v1/sessions/<agent>/<john-session-id>/messages
     ```
     Expect `403` with body `{"detail":"Session not found"}`.
-  - Posting a run with John's `session_id` as the throwaway user (via the UI,
-    or):
+  - Posting a run with John's `session_id` as the throwaway user:
     ```bash
     curl -s -o /dev/null -w "%{http_code}\n" \
          -H "Authorization: Bearer $ORCHESTRATOR_KEY" \
          -H "X-Auth-User-Id: <throwaway-user-uuid>" \
          -H "Content-Type: application/json" \
          -d "{\"input\":\"hi\",\"session_id\":\"<john-session-id>\"}" \
-         https://olliesandbox.jnow.io/orchestrator-proxy/v1/runs/<agent>
+         http://127.0.0.1:9123/v1/runs/<agent>
     ```
     Expect `403`.
+
+  **UI-based alternative** (validates the same isolation end-to-end through
+  the real edge, without hand-crafting headers): create a throwaway second
+  Supabase user, log in as them in the browser.
+  - Thread list is empty (they see none of John's sessions).
+  - They cannot open John's thread — there is no way to select it from their
+    own (empty) thread list, and navigating directly to a URL referencing
+    John's session id shows no messages / an error rather than John's
+    conversation.
+
+  **New smoke check — validates the frontend repo's nginx fix (item 1 there),
+  do not attempt to exercise this live from here since it requires changes to
+  `ollie-hermes-frontend`/nginx that this repo does not control:**
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}\n" \
+       https://<host>/hermes-proxy/api/sessions
+  ```
+  Expect `403`. This confirms nginx now blocks the previously-unfiltered
+  `/hermes-proxy/api/sessions*` subtree (the singleton-client path that the
+  original `/dashboard-proxy/<id>/api/sessions*` block did not cover).
 
 - **TRAIGA regression (Gate 1 now covers all chat, not just app traffic —
   this is new coverage, verify it):** as John, send a normal chat message
