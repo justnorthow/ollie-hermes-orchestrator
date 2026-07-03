@@ -3,6 +3,9 @@
 Run ON THE BOX (dashboards are loopback-bound):
   BACKFILL_USER_ID=<john-uuid> python3 scripts/backfill_sessions.py [--dry-run]
 Requires HERMES_DASHBOARD_URLS, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY in env.
+The native Hermes dashboard requires its session token even on loopback, so
+HERMES_DASHBOARD_TOKEN (the stable HERMES_DASHBOARD_SESSION_TOKEN set on each
+dashboard) must also be in env or /api/sessions returns 401.
 Idempotent — inserts use ignore-duplicates and never overwrite an owner.
 """
 import json
@@ -52,9 +55,12 @@ def main() -> int:
     if not (user_id and sb_url and sb_key and dash_map):
         print("Missing env: BACKFILL_USER_ID / SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / HERMES_DASHBOARD_URLS")
         return 1
+    dash_token = os.environ.get("HERMES_DASHBOARD_TOKEN", "").strip()
+    dash_headers = {"X-Hermes-Session-Token": dash_token} if dash_token else {}
     total = 0
     for agent, base in dash_map.items():
-        resp = httpx.get(f"{str(base).rstrip('/')}/api/sessions", params={"limit": 500}, timeout=30.0)
+        resp = httpx.get(f"{str(base).rstrip('/')}/api/sessions", params={"limit": 500},
+                         headers=dash_headers, timeout=30.0)
         resp.raise_for_status()
         data = resp.json()
         sessions = data if isinstance(data, list) else data.get("sessions", [])

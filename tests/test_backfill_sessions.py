@@ -1,4 +1,35 @@
+import scripts.backfill_sessions as backfill
 from scripts.backfill_sessions import rows_from_sessions
+
+
+def test_backfill_sends_dashboard_session_token(monkeypatch):
+    """The dashboard 401s without X-Hermes-Session-Token even on loopback; the
+    backfill's /api/sessions GET must forward HERMES_DASHBOARD_TOKEN."""
+    monkeypatch.setenv("BACKFILL_USER_ID", "uuid-john")
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
+    monkeypatch.setenv("HERMES_DASHBOARD_URLS", '{"real-estate":"http://127.0.0.1:9122"}')
+    monkeypatch.setenv("HERMES_DASHBOARD_TOKEN", "tok-123")
+    captured = {}
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["headers"] = headers
+        return _Resp([])  # no sessions -> no POST attempted
+
+    monkeypatch.setattr(backfill.httpx, "get", fake_get)
+    rc = backfill.main()
+    assert rc == 0
+    assert captured["headers"]["X-Hermes-Session-Token"] == "tok-123"
 
 
 def test_rows_from_sessions_maps_and_skips_blank_ids():

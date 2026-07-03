@@ -140,15 +140,26 @@ def _delete_row(agent: str, session_id: str) -> None:
         _logger.warning("_delete_row failed", exc_info=True)
 
 
+def _dashboard_headers() -> dict:
+    """Auth headers for the native Hermes dashboard. Even on a loopback bind the
+    dashboard requires its session token on sensitive /api routes (waived only for
+    non-loopback hosts under --insecure), echoed via X-Hermes-Session-Token. Set a
+    STABLE token per dashboard via HERMES_DASHBOARD_SESSION_TOKEN and hand the same
+    value to the orchestrator as HERMES_DASHBOARD_TOKEN; absent it, the dashboard's
+    token randomizes each restart and these calls 401."""
+    token = os.environ.get("HERMES_DASHBOARD_TOKEN", "").strip()
+    return {"X-Hermes-Session-Token": token} if token else {}
+
+
 def _dashboard_get(agent: str, path: str) -> tuple[int, bytes]:
     base = _dashboard_base(agent)
-    resp = httpx.get(f"{base}{path}", timeout=30.0)
+    resp = httpx.get(f"{base}{path}", headers=_dashboard_headers(), timeout=30.0)
     return resp.status_code, resp.content
 
 
 def _dashboard_delete(agent: str, path: str) -> tuple[int, bytes]:
     base = _dashboard_base(agent)
-    resp = httpx.delete(f"{base}{path}", timeout=30.0)
+    resp = httpx.delete(f"{base}{path}", headers=_dashboard_headers(), timeout=30.0)
     return resp.status_code, resp.content
 
 

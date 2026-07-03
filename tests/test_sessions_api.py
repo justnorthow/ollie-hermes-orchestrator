@@ -31,6 +31,51 @@ def test_list_requires_identity(client):
     assert r.status_code == 403
 
 
+def test_dashboard_get_sends_session_token_when_set(monkeypatch):
+    """The native Hermes dashboard 401s without X-Hermes-Session-Token even on
+    loopback; _dashboard_get must forward it from HERMES_DASHBOARD_TOKEN."""
+    monkeypatch.setenv("HERMES_DASHBOARD_URLS", json.dumps({"real-estate": "http://127.0.0.1:9119"}))
+    monkeypatch.setenv("HERMES_DASHBOARD_TOKEN", "tok-abc")
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        content = b"[]"
+
+    def fake_get(url, headers=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return _Resp()
+
+    monkeypatch.setattr(sessions.httpx, "get", fake_get)
+    status, _ = sessions._dashboard_get("real-estate", "/api/sessions/s-1/messages")
+    assert status == 200
+    assert captured["headers"]["X-Hermes-Session-Token"] == "tok-abc"
+
+
+def test_dashboard_delete_sends_session_token_when_set(monkeypatch):
+    monkeypatch.setenv("HERMES_DASHBOARD_URLS", json.dumps({"real-estate": "http://127.0.0.1:9119"}))
+    monkeypatch.setenv("HERMES_DASHBOARD_TOKEN", "tok-xyz")
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        content = b"{}"
+
+    def fake_delete(url, headers=None, timeout=None):
+        captured["headers"] = headers
+        return _Resp()
+
+    monkeypatch.setattr(sessions.httpx, "delete", fake_delete)
+    sessions._dashboard_delete("real-estate", "/api/sessions/s-1")
+    assert captured["headers"]["X-Hermes-Session-Token"] == "tok-xyz"
+
+
+def test_dashboard_headers_empty_when_token_unset(monkeypatch):
+    monkeypatch.delenv("HERMES_DASHBOARD_TOKEN", raising=False)
+    assert sessions._dashboard_headers() == {}
+
+
 def test_list_returns_only_own_rows(client, monkeypatch):
     rows = [{"hermes_session_id": "s-1", "title": "Hi", "created_at": "2026-07-01T00:00:00Z",
              "last_active_at": "2026-07-02T00:00:00Z"}]
