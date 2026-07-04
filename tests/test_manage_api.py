@@ -56,6 +56,13 @@ class _Resp:
     ("sessions", False), ("sessions/s-1/messages", False), ("status", False),
     ("dashboard", False), ("providers", False), ("../etc/passwd", False),
     ("envy", False), ("", False),
+    # Traversal via dot-segments: httpx normalizes "../" when building the
+    # upstream URL, so a raw-string prefix match alone would let these reach
+    # excluded endpoints (e.g. env/../../sessions -> /api/sessions). Must be
+    # rejected before the prefix check.
+    ("env/../../sessions", False), ("env/../status", False),
+    ("skills/../../env", False), ("analytics/../sessions", False),
+    ("env/.", False), ("config/../config", False),
 ])
 def test_subpath_allowed(sub, ok):
     assert manage._subpath_allowed(sub) is ok
@@ -102,6 +109,44 @@ def test_admin_non_allowlisted_404_without_touching_dashboard(client, monkeypatc
     r = client.get("/v1/agents/real-estate/dashboard/sessions", headers={"X-Auth-User-Id": "admin-1"})
     assert r.status_code == 404
     assert called == []
+
+
+def test_admin_dotdot_traversal_404_without_touching_dashboard(client, monkeypatch):
+    # Regression for the allowlist-traversal bypass: "env/../../sessions" starts
+    # with the allowed "env/" prefix under a naive raw-string check, but httpx
+    # normalizes "../" when building the upstream URL, so it would actually
+    # forward to /api/sessions (an endpoint the allowlist deliberately excludes).
+    #
+    # CONFIRMED (not hypothetical): Starlette's TestClient itself builds the
+    # request through httpx.Request(...), which normalizes "../" segments in
+    # the URL BEFORE the ASGI router ever sees the path. Sending this literal
+    # URL through TestClient collapses it client-side to
+    # "/v1/agents/real-estate/sessions" (the "dashboard/" segment and the
+    # dot-segments are gone), which doesn't match this router's
+    # "/v1/agents/{agent}/dashboard/{subpath:path}" route at all -> FastAPI's
+    # own generic {"detail": "Not Found"} (capital F) fires, never reaching
+    # `manage.py`'s allowlist 404 ({"detail": "Not found"}, lowercase f).
+    # Verified directly: called upstream list stayed empty and the body was
+    # the generic router 404, not our handler's.
+    #
+    # So this test cannot exercise the fixed `_subpath_allowed` logic through
+    # TestClient at all -- it only proves the route is unreachable via a
+    # dot-segment URL by construction of the HTTP client itself, which is a
+    # useful but different safety property. The REAL regression lock for the
+    # defect (raw subpath string containing dot-segments bypassing the
+    # allowlist) is the unit-level test_subpath_allowed parametrization above
+    # (e.g. "env/../../sessions" -> False), which calls `_subpath_allowed`
+    # directly with the raw string and does not go through any URL/httpx
+    # normalization.
+    _as(monkeypatch, "account_admin")
+    called = []
+    monkeypatch.setattr(manage.httpx, "request", lambda *a, **k: called.append(1) or _Resp())
+    r = client.get(
+        "/v1/agents/real-estate/dashboard/env/../../sessions",
+        headers={"X-Auth-User-Id": "admin-1"},
+    )
+    assert r.status_code == 404
+    assert called == [], "dashboard must not be contacted for a dot-segment traversal subpath"
 
 
 def test_identityless_internal_caller_allowed(client, monkeypatch):

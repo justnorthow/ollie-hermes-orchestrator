@@ -46,6 +46,14 @@ _ALLOWED_PREFIXES = (
 
 
 def _subpath_allowed(subpath: str) -> bool:
+    # Reject dot-segments up front: httpx normalizes "../" when building the
+    # upstream URL, so a raw-string prefix match on a subpath like
+    # "env/../../sessions" would pass here yet forward to /api/sessions (an
+    # excluded endpoint). Rejecting any "."/".." segment keeps the allowlist
+    # exact regardless of downstream normalization.
+    segments = subpath.split("/")
+    if any(seg in ("", ".", "..") for seg in segments):
+        return False
     return any(subpath == p or subpath.startswith(p + "/") for p in _ALLOWED_PREFIXES)
 
 
