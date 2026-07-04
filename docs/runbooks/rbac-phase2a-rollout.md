@@ -245,6 +245,97 @@ below — create one for this test, do not reuse John's.
 
 Only proceed to the `jnow` box once every check above passes on sandbox.
 
+## 7a. Phase 2a.2 — dashboard-management gating (smoke tests)
+
+Phase 2a.2 routes the Hermes dashboard management surface (env, skills,
+schedules, logs, usage, memory providers) through the orchestrator's
+`account_admin+` gate, blocks the raw `/hermes-proxy` and `/dashboard-proxy`
+paths at nginx, makes management per-agent (a "Managing: [agent]" selector
+in the SPA), and hides the management nav items from `member`/`manager`
+tiers. This does not ship as its own deploy — it folds into the single
+staged **Phase 2 rollout (2a + 2a.1 + 2a.3 + 2a.2)**, sandbox-first then
+jnow, using the same `docker compose pull && docker compose up -d` /
+orchestrator restart from Steps 5 and 6 above. **No new box config is
+required:** the Phase 1 `HERMES_DASHBOARD_TOKEN` already covers the proxy's
+dashboard auth, and the frontend rebuild is the same image bump as Step 6 —
+there's no separate tag or env var to add for 2a.2.
+
+All on-box against `http://127.0.0.1:9123` with the
+`Authorization: Bearer $ORCHESTRATOR_KEY` header (same convention as Step 7),
+plus a pass through the UI at `https://olliesandbox.jnow.io`. Reuse the same
+throwaway member UUID from Step 7 and John's `platform_operator` UUID
+(`1a2b341c-0d01-418f-9fdb-4cebc27058c7`). Substitute `<agent>` with a real
+configured agent id (e.g. `olivia-marketing`).
+
+- **Member denied from dashboard writes:**
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}\n" \
+       -H "Authorization: Bearer $ORCHESTRATOR_KEY" -H "X-Auth-User-Id: <throwaway-user-uuid>" \
+       -H "Content-Type: application/json" -d '{"key":"FOO","value":"bar"}' \
+       -X PUT http://127.0.0.1:9123/v1/agents/<agent>/dashboard/env
+  ```
+  Expect `403`. Follow up with an admin read (see below) to confirm the env
+  var was not actually written.
+
+- **Admin forwarded (proves the dashboard session token is injected
+  server-side):**
+  ```bash
+  curl -s -H "Authorization: Bearer $ORCHESTRATOR_KEY" -H "X-Auth-User-Id: 1a2b341c-0d01-418f-9fdb-4cebc27058c7" \
+       http://127.0.0.1:9123/v1/agents/<agent>/dashboard/env
+  ```
+  Expect `200` with the agent's env var list. The request carries no
+  dashboard credential of its own — the orchestrator injects
+  `HERMES_DASHBOARD_TOKEN` before forwarding, so a `200` here confirms that
+  injection happened.
+
+- **Non-allowlisted subpath 404s (dashboard never contacted):**
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}\n" \
+       -H "Authorization: Bearer $ORCHESTRATOR_KEY" -H "X-Auth-User-Id: 1a2b341c-0d01-418f-9fdb-4cebc27058c7" \
+       http://127.0.0.1:9123/v1/agents/<agent>/dashboard/sessions
+  ```
+  Expect `404` — `sessions` isn't in the management allowlist, so the
+  orchestrator rejects it before ever reaching the dashboard.
+
+- **Status stays member-reachable (not part of the management gate):**
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}\n" \
+       -H "Authorization: Bearer $ORCHESTRATOR_KEY" -H "X-Auth-User-Id: <throwaway-user-uuid>" \
+       http://127.0.0.1:9123/v1/agents/<agent>/status
+  ```
+  Expect `200`.
+
+- **nginx edge blocks the raw proxy paths (from the frontend origin, not
+  on-box):**
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}\n" https://olliesandbox.jnow.io/hermes-proxy/api/env
+  ```
+  Expect `403`.
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}\n" https://olliesandbox.jnow.io/dashboard-proxy/<agent>/api/skills
+  ```
+  Expect `403`.
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}\n" https://olliesandbox.jnow.io/hermes-proxy/api/status
+  ```
+  Expect **not** `403` (status stays reachable at the edge — the nginx guard
+  precedes the proxy block for status/sessions the same way it does on-box).
+
+- **In the UI:** log in as the throwaway member — Skills, Schedules, Logs,
+  and Usage are absent from the nav, and navigating directly to `/skills`
+  redirects home. Log in as John (`platform_operator`, `account_admin+`) —
+  all four appear, and the "Managing: [agent]" selector at the top of the
+  management pages switches which agent's Schedules/Logs/Usage are loaded
+  when changed.
+
+Only proceed to the `jnow` box once every check above passes on sandbox,
+alongside the rest of Step 7.
+
+**Rollback** is the same as Step 9 below — retag the frontend image,
+`git checkout` the pre-rollout orchestrator SHA, restart both. Nothing
+persistent was added for 2a.2 (no new tables, no new env vars), so there is
+no additional cleanup.
+
 ## 8. Roll out to jnow
 
 Repeat Steps 2, 4, 5, 6 and 7 on the `jnow` box, using `INSTANCE_ID=jnow` and
