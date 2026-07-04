@@ -155,13 +155,18 @@ def _emit_admin_event(request, event_type, target_user, detail, actor, actor_tie
         key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
         if not (url and key):
             return
+        try:
+            instance_id = request.app.state.config.instance_id
+        except Exception:
+            instance_id = None
         httpx.post(
             f"{url}/rest/v1/governance_events",
             headers={"apikey": key, "Authorization": f"Bearer {key}",
                      "Content-Type": "application/json", "Prefer": "return=minimal"},
             json={"user_email": actor or "", "user_role": actor_tier,
                   "app": "admin", "event_type": event_type, "status": "ok",
-                  "title": target_user, "findings": [], "content": detail, "run_id": None},
+                  "title": target_user, "findings": [], "content": detail,
+                  "run_id": None, "instance_id": instance_id},
             timeout=10.0,
         ).raise_for_status()
     except Exception:

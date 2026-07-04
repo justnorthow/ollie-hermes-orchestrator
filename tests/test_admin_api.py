@@ -89,6 +89,29 @@ def test_emit_admin_event_records_actual_caller_tier(client, monkeypatch):
     assert posted["json"]["user_role"] == "platform_operator"
 
 
+def test_admin_event_carries_instance_id(client, monkeypatch):
+    monkeypatch.setattr(roles, "resolve_tier",
+                        lambda i, u: "member" if u == MEMBER else "account_admin")
+    monkeypatch.setattr(roles, "set_tier", lambda inst, uid, tier, by: None)
+    posted = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        posted["json"] = json
+        return _Resp()
+
+    monkeypatch.setenv("SUPABASE_URL", "http://sb")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "k")
+    monkeypatch.setattr(admin.httpx, "post", _fake_post)
+    r = client.put(f"/v1/admin/users/{MEMBER}/role", json={"tier": "manager"},
+                   headers={"X-Auth-User-Id": ADMIN})
+    assert r.status_code == 200
+    assert posted["json"]["instance_id"] == "sandbox"  # fixture app.state.config
+
+
 def test_account_admin_cannot_assign_platform_operator(client, monkeypatch):
     monkeypatch.setattr(
         roles, "resolve_tier",

@@ -299,6 +299,42 @@ def test_governed_extractor_event_pass_strips_and_writes_both(client, monkeypatc
     assert "Newsletter body." in content
 
 
+def test_blocked_event_carries_instance_id(client, monkeypatch):
+    written = []
+    monkeypatch.setattr(runs, "_write_event", lambda row, url, key: written.append(row))
+    monkeypatch.setattr(runs, "_instance_id", lambda request: "sandbox")
+    body = json.dumps({"input": "how do i kill myself"}).encode()
+    r = client.post(
+        "/v1/runs/real-estate",
+        content=body,
+        headers={"X-Auth-Email": "user@example.com", "X-Auth-Role": "broker"},
+    )
+    assert r.status_code == 403
+    assert len(written) == 1
+    assert written[0]["instance_id"] == "sandbox"
+
+
+def test_attestation_event_carries_instance_id(client, monkeypatch):
+    written: list[dict] = []
+    output_with_att = f"Listing copy here.\n{_ATT_PASS_BLOCK}"
+
+    async def fake_stream(base, run_id):
+        yield _sse(output_with_att)
+
+    monkeypatch.setattr(runs, "_stream_upstream", fake_stream)
+    monkeypatch.setattr(runs, "_write_event", lambda row, url, key: written.append(row))
+    monkeypatch.setattr(runs, "_instance_id", lambda request: "sandbox")
+    monkeypatch.delenv("GUARDRAIL_ENFORCE_APPS", raising=False)
+    r = client.get(
+        "/v1/runs/real-estate/r-1/events",
+        headers={"X-Auth-Email": "broker@example.com", "X-Auth-Role": "broker",
+                 "X-Gov-App": "real-estate"},
+    )
+    assert r.status_code == 200
+    assert len(written) == 1
+    assert written[0]["instance_id"] == "sandbox"
+
+
 def test_governed_extractor_event_enforce_withholds(client, monkeypatch):
     """Governed compliance_screen run + no attestation + enforce: output withheld, attestation.withheld
     recorded — proving enforcement now reaches the extractor (live newsletter) path."""

@@ -204,6 +204,16 @@ def _write_event(row: dict, url: str, key: str) -> None:
     resp.raise_for_status()
 
 
+def _instance_id(request: Request) -> str | None:
+    """The orchestrator's configured instance id (INSTANCE_ID), or None on a bare
+    scope / missing config. Governance writes stamp this so RLS can scope reads."""
+    try:
+        cfg = getattr(request.app.state, "config", None)
+        return cfg.instance_id if cfg else None
+    except Exception:
+        return None
+
+
 def _extract_input(body: bytes) -> str:
     """Extract the user prompt from a run-create body. Any error -> '' (allows, never raises)."""
     try:
@@ -235,6 +245,7 @@ def _emit_guardrail(request: Request, agent: str, event_type: str, verdict: dict
             "findings": verdict.get("prohibition"),
             "content": safe_content,
             "run_id": None,
+            "instance_id": _instance_id(request),
         }, url, key)
     except Exception:
         _logger.warning("_emit_guardrail failed", exc_info=True)
@@ -359,6 +370,7 @@ async def run_events(agent: str, run_id: str, request: Request):
     gov_title = urllib.parse.unquote(request.headers.get("X-Gov-Title", "").strip())
     url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    inst = _instance_id(request)
 
     async def gen():
         chunks: list[bytes] = []
@@ -402,6 +414,7 @@ async def run_events(agent: str, run_id: str, request: Request):
                         "findings": (att or {}).get("rules") or [],
                         "content": None,
                         "run_id": run_id,
+                        "instance_id": inst,
                     }, url, key)
                     # Rich capture (additive) — only when the event-type has a registered
                     # extractor. Never let a capture failure abort delivery.
@@ -414,6 +427,7 @@ async def run_events(agent: str, run_id: str, request: Request):
                                 "status": parsed["status"], "title": gov_title or None,
                                 "findings": parsed["findings"], "content": parsed["content"],
                                 "run_id": run_id,
+                                "instance_id": inst,
                             }, url, key)
                         except Exception:
                             _logger.exception("governance capture failed for run %s", run_id)
