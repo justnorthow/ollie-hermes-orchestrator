@@ -35,7 +35,8 @@ def test_whoami_returns_tier_and_reachable(client, monkeypatch):
     r = client.get("/v1/whoami", headers={"X-Auth-User-Id": MEMBER})
     assert r.status_code == 200
     assert r.json() == {"userId": MEMBER, "tier": "member",
-                        "label": "Member", "reachableAgentIds": ["default"]}
+                        "label": "Member", "tags": [],
+                        "reachableAgentIds": ["default"]}
 
 
 def test_admin_users_requires_admin(client, monkeypatch):
@@ -154,5 +155,33 @@ def test_platform_operator_can_demote_another_platform_operator(client, monkeypa
 def test_set_labels_admin_only(client, monkeypatch):
     monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "member")
     r = client.put("/v1/admin/role-labels", json={"manager": "Team Lead"},
+                   headers={"X-Auth-User-Id": MEMBER})
+    assert r.status_code == 403
+
+
+def test_whoami_includes_tags(client, monkeypatch):
+    monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "member")
+    monkeypatch.setattr(roles, "get_labels", lambda i: dict(roles.DEFAULT_LABELS))
+    monkeypatch.setattr(roles, "list_user_tags", lambda u: ["compliance"])
+    r = client.get("/v1/whoami", headers={"X-Auth-User-Id": MEMBER})
+    assert r.status_code == 200
+    assert r.json()["tags"] == ["compliance"]
+
+
+def test_set_user_tags_admin_only_and_audits(client, monkeypatch):
+    monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "account_admin")
+    writes, events = [], []
+    monkeypatch.setattr(roles, "set_user_tags", lambda uid, tags: writes.append((uid, tags)))
+    monkeypatch.setattr(admin, "_emit_admin_event", lambda *a, **k: events.append(a))
+    r = client.put(f"/v1/admin/users/{MEMBER}/tags", json={"tags": ["compliance"]},
+                   headers={"X-Auth-User-Id": ADMIN})
+    assert r.status_code == 200
+    assert writes == [(MEMBER, ["compliance"])]
+    assert len(events) == 1
+
+
+def test_set_user_tags_forbidden_for_member(client, monkeypatch):
+    monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "member")
+    r = client.put(f"/v1/admin/users/{MEMBER}/tags", json={"tags": ["x"]},
                    headers={"X-Auth-User-Id": MEMBER})
     assert r.status_code == 403

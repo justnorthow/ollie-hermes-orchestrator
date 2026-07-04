@@ -11,8 +11,10 @@ def _env(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
     roles.invalidate_cache()
+    roles.invalidate_tags()
     yield
     roles.invalidate_cache()
+    roles.invalidate_tags()
 
 
 def test_tiers_and_ordering():
@@ -60,3 +62,23 @@ def test_get_labels_merges_defaults(monkeypatch):
     labels = roles.get_labels(INST)
     assert labels["manager"] == "Team Lead"
     assert labels["member"] == roles.DEFAULT_LABELS["member"]
+
+
+def test_list_user_tags_reads_and_caches(monkeypatch):
+    calls = []
+    monkeypatch.setattr(roles, "_fetch_tags", lambda uid: calls.append(1) or ["compliance"])
+    roles.invalidate_tags()
+    assert roles.list_user_tags("u-1") == ["compliance"]
+    assert roles.list_user_tags("u-1") == ["compliance"]  # cached
+    assert len(calls) == 1
+    roles.invalidate_tags("u-1")
+    roles.list_user_tags("u-1")
+    assert len(calls) == 2
+
+
+def test_list_user_tags_fails_closed_to_empty(monkeypatch):
+    def boom(uid):
+        raise RuntimeError("down")
+    monkeypatch.setattr(roles, "_fetch_tags", boom)
+    roles.invalidate_tags()
+    assert roles.list_user_tags("u-1") == []
