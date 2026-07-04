@@ -32,10 +32,12 @@ def test_whoami_requires_identity(client):
 def test_whoami_returns_tier_and_reachable(client, monkeypatch):
     monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "member")
     monkeypatch.setattr(roles, "get_labels", lambda i: dict(roles.DEFAULT_LABELS))
+    monkeypatch.setattr(roles, "resolve_governance_view", lambda i, u: False)
     r = client.get("/v1/whoami", headers={"X-Auth-User-Id": MEMBER})
     assert r.status_code == 200
     assert r.json() == {"userId": MEMBER, "tier": "member",
                         "label": "Member", "tags": [],
+                        "governanceView": False,
                         "reachableAgentIds": ["default"]}
 
 
@@ -206,5 +208,37 @@ def test_set_user_tags_admin_only_and_audits(client, monkeypatch):
 def test_set_user_tags_forbidden_for_member(client, monkeypatch):
     monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "member")
     r = client.put(f"/v1/admin/users/{MEMBER}/tags", json={"tags": ["x"]},
+                   headers={"X-Auth-User-Id": MEMBER})
+    assert r.status_code == 403
+
+
+def test_whoami_includes_governance_view(client, monkeypatch):
+    monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "member")
+    monkeypatch.setattr(roles, "get_labels", lambda i: dict(roles.DEFAULT_LABELS))
+    monkeypatch.setattr(roles, "list_user_tags", lambda u: [])
+    monkeypatch.setattr(roles, "resolve_governance_view", lambda i, u: True)
+    r = client.get("/v1/whoami", headers={"X-Auth-User-Id": MEMBER})
+    assert r.status_code == 200
+    assert r.json()["governanceView"] is True
+
+
+def test_set_governance_view_admin_only_and_audits(client, monkeypatch):
+    monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "account_admin")
+    writes, events = [], []
+    monkeypatch.setattr(roles, "set_governance_view",
+                        lambda inst, uid, enabled: writes.append((inst, uid, enabled)))
+    monkeypatch.setattr(admin, "_emit_admin_event", lambda *a, **k: events.append(a))
+    r = client.put(f"/v1/admin/users/{MEMBER}/governance-view", json={"enabled": True},
+                   headers={"X-Auth-User-Id": ADMIN})
+    assert r.status_code == 200
+    assert writes == [("sandbox", MEMBER, True)]
+    assert len(events) == 1
+
+
+def test_set_governance_view_forbidden_for_member(client, monkeypatch):
+    monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "member")
+    monkeypatch.setattr(roles, "set_governance_view",
+                        lambda *a: pytest.fail("member must not write"))
+    r = client.put(f"/v1/admin/users/{MEMBER}/governance-view", json={"enabled": True},
                    headers={"X-Auth-User-Id": MEMBER})
     assert r.status_code == 403

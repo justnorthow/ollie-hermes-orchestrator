@@ -51,6 +51,7 @@ def whoami(request: Request):
     label = roles.get_labels(cfg.instance_id).get(tier, tier)
     return {"userId": uid, "tier": tier, "label": label,
             "tags": roles.list_user_tags(uid),
+            "governanceView": roles.resolve_governance_view(cfg.instance_id, uid),
             "reachableAgentIds": authz.reachable_agent_ids(request, cfg)}
 
 
@@ -115,6 +116,10 @@ def set_user_role(user_id: str, body: RoleBody, request: Request):
     return {"userId": user_id, "tier": body.tier}
 
 
+class GovernanceViewBody(BaseModel):
+    enabled: bool
+
+
 class TagsBody(BaseModel):
     tags: list[str]
 
@@ -127,6 +132,17 @@ def set_user_tags_route(user_id: str, body: TagsBody, request: Request):
     roles.set_user_tags(user_id, body.tags)
     _emit_admin_event(request, "tags.set", user_id, ",".join(body.tags), caller[0], caller[1])
     return {"userId": user_id, "tags": body.tags}
+
+
+@router.put("/v1/admin/users/{user_id}/governance-view")
+def set_user_governance_view(user_id: str, body: GovernanceViewBody, request: Request):
+    caller, deny = _require_admin(request)
+    if deny:
+        return deny
+    roles.set_governance_view(_cfg(request).instance_id, user_id, body.enabled)
+    _emit_admin_event(request, "governance_view.set", user_id, str(body.enabled),
+                      caller[0], caller[1])
+    return {"userId": user_id, "governanceView": body.enabled}
 
 
 @router.get("/v1/admin/role-labels")

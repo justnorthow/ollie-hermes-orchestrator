@@ -82,3 +82,46 @@ def test_list_user_tags_fails_closed_to_empty(monkeypatch):
     monkeypatch.setattr(roles, "_fetch_tags", boom)
     roles.invalidate_tags()
     assert roles.list_user_tags("u-1") == []
+
+
+def test_resolve_governance_view_true_for_account_admin(monkeypatch):
+    monkeypatch.setattr(roles, "_fetch_gov", lambda inst, uid: True)
+    roles.invalidate_cache()
+    assert roles.resolve_governance_view(INST, U) is True
+
+
+def test_resolve_governance_view_cached(monkeypatch):
+    calls = []
+    monkeypatch.setattr(roles, "_fetch_gov", lambda inst, uid: calls.append(1) or True)
+    roles.invalidate_cache()
+    roles.resolve_governance_view(INST, U)
+    roles.resolve_governance_view(INST, U)
+    assert len(calls) == 1               # second served from cache
+    roles.invalidate_cache(U)
+    roles.resolve_governance_view(INST, U)
+    assert len(calls) == 2               # invalidate_cache also sweeps the gov cache
+
+
+def test_resolve_governance_view_fails_closed(monkeypatch):
+    def boom(inst, uid):
+        raise RuntimeError("supabase down")
+    monkeypatch.setattr(roles, "_fetch_gov", boom)
+    roles.invalidate_cache()
+    assert roles.resolve_governance_view(INST, U) is False
+
+
+def test_set_governance_view_ensures_row_then_patches(monkeypatch):
+    calls = []
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(roles.httpx, "post",
+                        lambda *a, **k: calls.append(("post", k.get("json"))) or _Resp())
+    monkeypatch.setattr(roles.httpx, "patch",
+                        lambda *a, **k: calls.append(("patch", k.get("json"))) or _Resp())
+    roles.set_governance_view(INST, U, True)
+    # ensure-row insert of tier 'member' (no-clobber), then PATCH the flag.
+    assert calls[0][0] == "post" and calls[0][1]["tier"] == "member"
+    assert calls[1][0] == "patch" and calls[1][1]["governance_view"] is True

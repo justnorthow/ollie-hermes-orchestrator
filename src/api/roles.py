@@ -24,6 +24,8 @@ DEFAULT_LABELS: dict[str, str] = {
 _CACHE_TTL = 30.0  # seconds
 # (instance_id, user_id) -> (tier, monotonic_expiry)
 _tier_cache: dict[tuple[str, str], tuple[str, float]] = {}
+# (instance_id, user_id) -> (governance_view_bool, monotonic_expiry)
+_gov_cache: dict[tuple[str, str], tuple[bool, float]] = {}
 
 
 def is_at_least(tier: str, minimum: str) -> bool:
@@ -73,13 +75,54 @@ def resolve_tier(instance_id: str, user_id: str) -> str:
     return tier
 
 
+def _fetch_gov(instance_id: str, user_id: str) -> bool:
+    """True iff the user's user_roles row for instance_id grants governance view:
+    account_admin+ tier OR the governance_view flag. False if no row."""
+    sb = _sb()
+    if not sb:
+        return False
+    url, key = sb
+    resp = httpx.get(
+        f"{url}/rest/v1/user_roles",
+        params={"instance_id": f"eq.{instance_id}", "user_id": f"eq.{user_id}",
+                "select": "tier,governance_view"},
+        headers=_sb_headers(key), timeout=10.0,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    if not rows:
+        return False
+    row = rows[0]
+    return is_at_least(row.get("tier") or "member", "account_admin") or bool(row.get("governance_view"))
+
+
+def resolve_governance_view(instance_id: str, user_id: str) -> bool:
+    """Whether the caller may see this instance's governance events; cached;
+    fail-closed to False on absence or any error."""
+    now = time.monotonic()
+    key = (instance_id, user_id)
+    hit = _gov_cache.get(key)
+    if hit and hit[1] > now:
+        return hit[0]
+    try:
+        gv = _fetch_gov(instance_id, user_id)
+    except Exception:
+        _logger.warning("resolve_governance_view failed; defaulting False", exc_info=True)
+        gv = False
+    _gov_cache[key] = (gv, now + _CACHE_TTL)
+    return gv
+
+
 def invalidate_cache(user_id: str | None = None) -> None:
     if user_id is None:
         _tier_cache.clear()
+        _gov_cache.clear()
     else:
         # cache is keyed by (instance_id, user_id); sweep all instances for this user
         for k in [k for k in _tier_cache if k[1] == user_id]:
             _tier_cache.pop(k, None)
+        for k in [k for k in _gov_cache if k[1] == user_id]:
+            _gov_cache.pop(k, None)
 
 
 def set_tier(instance_id: str, user_id: str, tier: str, assigned_by: str | None) -> None:
@@ -95,6 +138,32 @@ def set_tier(instance_id: str, user_id: str, tier: str, assigned_by: str | None)
         headers={**_sb_headers(key), "Prefer": "resolution=merge-duplicates,return=minimal"},
         json={"instance_id": instance_id, "user_id": user_id, "tier": tier,
               "assigned_by": assigned_by, "updated_at": _now_iso()},
+        timeout=10.0,
+    ).raise_for_status()
+    invalidate_cache(user_id)
+
+
+def set_governance_view(instance_id: str, user_id: str, enabled: bool) -> None:
+    """Set a user's per-instance governance_view flag WITHOUT clobbering their tier.
+    Ensure a row exists (on_conflict do nothing, tier=member), then PATCH the flag."""
+    sb = _sb()
+    if not sb:
+        raise RuntimeError("Supabase not configured")
+    url, key = sb
+    # 1. Ensure a row exists; on conflict do nothing so an existing tier is untouched.
+    httpx.post(
+        f"{url}/rest/v1/user_roles",
+        params={"on_conflict": "instance_id,user_id"},
+        headers={**_sb_headers(key), "Prefer": "resolution=ignore-duplicates,return=minimal"},
+        json={"instance_id": instance_id, "user_id": user_id, "tier": "member"},
+        timeout=10.0,
+    ).raise_for_status()
+    # 2. Set the flag only (never touches tier).
+    httpx.patch(
+        f"{url}/rest/v1/user_roles",
+        params={"instance_id": f"eq.{instance_id}", "user_id": f"eq.{user_id}"},
+        headers={**_sb_headers(key), "Prefer": "return=minimal"},
+        json={"governance_view": enabled, "updated_at": _now_iso()},
         timeout=10.0,
     ).raise_for_status()
     invalidate_cache(user_id)
