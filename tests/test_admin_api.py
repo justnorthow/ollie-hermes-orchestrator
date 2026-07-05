@@ -46,6 +46,23 @@ def test_admin_users_requires_admin(client, monkeypatch):
     assert client.get("/v1/admin/users", headers={"X-Auth-User-Id": MEMBER}).status_code == 403
 
 
+def test_admin_users_lists_users_with_governance_view(client, monkeypatch):
+    monkeypatch.setattr(roles, "resolve_tier", lambda i, u: "account_admin")  # caller is admin
+    monkeypatch.setattr(admin, "_supabase_users",
+                        lambda: {MEMBER: "m@x.io", ADMIN: "a@x.io"})
+    monkeypatch.setattr(roles, "list_roles", lambda inst: {ADMIN: "account_admin"})
+    monkeypatch.setattr(roles, "get_labels", lambda inst: dict(roles.DEFAULT_LABELS))
+    monkeypatch.setattr(roles, "list_user_tags", lambda uid: [])
+    monkeypatch.setattr(roles, "list_governance_flags",
+                        lambda inst: {MEMBER: True})  # MEMBER flagged, ADMIN not
+    r = client.get("/v1/admin/users", headers={"X-Auth-User-Id": ADMIN})
+    assert r.status_code == 200
+    by_id = {u["userId"]: u for u in r.json()}
+    assert by_id[MEMBER]["governanceView"] is True
+    assert by_id[ADMIN]["governanceView"] is False   # no row -> default False
+    assert by_id[MEMBER]["tier"] == "member"          # not in role_map -> member
+
+
 def test_admin_set_role_writes_and_audits(client, monkeypatch):
     # Caller is account_admin; target (MEMBER) resolves strictly below caller,
     # and the assigned tier ("manager") is also strictly below caller -- allowed.

@@ -110,6 +110,20 @@ def test_resolve_governance_view_fails_closed(monkeypatch):
     assert roles.resolve_governance_view(INST, U) is False
 
 
+def test_list_governance_flags_maps_user_to_raw_flag(monkeypatch):
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return [
+                {"user_id": "u-1", "governance_view": True},
+                {"user_id": "u-2", "governance_view": False},
+                {"user_id": "u-3", "governance_view": None},
+            ]
+    monkeypatch.setattr(roles.httpx, "get", lambda *a, **k: _Resp())
+    flags = roles.list_governance_flags(INST)
+    assert flags == {"u-1": True, "u-2": False, "u-3": False}
+
+
 def test_set_governance_view_ensures_row_then_patches(monkeypatch):
     calls = []
 

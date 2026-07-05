@@ -183,6 +183,23 @@ def list_roles(instance_id: str) -> dict[str, str]:
     return {r["user_id"]: r["tier"] for r in resp.json()}
 
 
+def list_governance_flags(instance_id: str) -> dict[str, bool]:
+    """user_id -> raw governance_view flag for this instance; {} if unconfigured.
+    The RAW column value (not the tier-resolved view) — the admin UI toggle owns
+    this flag directly, and derives the tier-grant separately."""
+    sb = _sb()
+    if not sb:
+        return {}
+    url, key = sb
+    resp = httpx.get(
+        f"{url}/rest/v1/user_roles",
+        params={"instance_id": f"eq.{instance_id}", "select": "user_id,governance_view"},
+        headers=_sb_headers(key), timeout=10.0,
+    )
+    resp.raise_for_status()
+    return {r["user_id"]: bool(r.get("governance_view")) for r in resp.json()}
+
+
 def _fetch_labels(instance_id: str) -> dict[str, str]:
     sb = _sb()
     if not sb:

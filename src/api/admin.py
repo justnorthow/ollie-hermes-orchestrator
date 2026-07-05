@@ -77,6 +77,7 @@ def admin_users(request: Request):
     cfg = _cfg(request)
     role_map = roles.list_roles(cfg.instance_id)
     labels = roles.get_labels(cfg.instance_id)
+    gov_flags = roles.list_governance_flags(cfg.instance_id)
     try:
         emails = _supabase_users()
     except Exception:
@@ -86,7 +87,8 @@ def admin_users(request: Request):
     for uid, email in emails.items():
         tier = role_map.get(uid, "member")
         out.append({"userId": uid, "email": email, "tier": tier,
-                    "label": labels.get(tier, tier), "tags": roles.list_user_tags(uid)})
+                    "label": labels.get(tier, tier), "tags": roles.list_user_tags(uid),
+                    "governanceView": gov_flags.get(uid, False)})
     return out
 
 
