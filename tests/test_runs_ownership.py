@@ -91,6 +91,15 @@ def test_events_403_for_foreign_run(client, monkeypatch):
     assert r.status_code == 403
 
 
+def test_events_403_for_unknown_run_owner(client, monkeypatch):
+    async def fake_stream(base, run_id):
+        yield b'data: {"event":"message.delta","delta":"hi"}\n\n'
+
+    monkeypatch.setattr(runs, "_stream_upstream", fake_stream)
+    r = client.get("/v1/runs/real-estate/r-unknown/events", headers={"X-Auth-User-Id": USER_A})
+    assert r.status_code == 403
+
+
 def test_touch_session_called_on_owned_session_continue(client, monkeypatch):
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r1"}'))
     monkeypatch.setattr(runs, "_session_owner", lambda a, s: USER_A)

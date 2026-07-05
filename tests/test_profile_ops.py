@@ -1,4 +1,6 @@
 from pathlib import Path
+import pytest
+
 from src.profile_ops import create_profile, delete_profile, write_profile_env
 
 
@@ -26,6 +28,17 @@ def test_write_profile_env_writes_mode_0600(fake_env):
     import os
     if os.name == "posix":
         assert oct(p.stat().st_mode)[-3:] == "600"
+
+
+def test_write_profile_env_rejects_multiline_values(fake_env):
+    create_profile("paige")
+    with pytest.raises(ValueError, match="single-line"):
+        write_profile_env(
+            "paige",
+            provider_creds={"ANTHROPIC_API_KEY": "sk-ok\nMALICIOUS=true"},
+            api_server_port=9110,
+            api_server_key="shared",
+        )
 
 
 def test_delete_profile_removes_dir(fake_env):

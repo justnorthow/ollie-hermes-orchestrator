@@ -301,9 +301,22 @@ async def create_run(agent: str, request: Request):
 def _run_owner_gate(request: Request, run_id: str) -> JSONResponse | None:
     user_id = request.headers.get("X-Auth-User-Id", "").strip()
     owner = _RUN_OWNERS.get(run_id)
-    if owner and user_id and owner != user_id:
+    if user_id and owner != user_id:
         return JSONResponse({"detail": "Run not found"}, status_code=403)
     return None
+
+
+def _list_runs_denied(request: Request) -> JSONResponse | None:
+    user_id = request.headers.get("X-Auth-User-Id", "").strip()
+    if not user_id:
+        return None
+    try:
+        cfg = getattr(request.app.state, "config", None)
+    except Exception:
+        cfg = None
+    if cfg is None:
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    return authz.admin_denied(request)
 
 
 @router.post("/v1/runs/{agent}/{run_id}/stop")
@@ -338,6 +351,9 @@ async def approve_run(agent: str, run_id: str, request: Request):
 @router.get("/v1/runs/{agent}")
 async def list_runs(agent: str, request: Request):
     denied = _rbac_denied(request, agent)
+    if denied:
+        return denied
+    denied = _list_runs_denied(request)
     if denied:
         return denied
     if not _gateway_base(agent):

@@ -18,6 +18,15 @@ from src.auth import require_bearer
 
 @pytest.fixture
 def app(tmp_path):
+    (tmp_path / ".env").write_text(
+        'AGENTS_JSON=['
+        '{"id":"real-estate","name":"Real Estate","gatewayUrl":"http://host.docker.internal:9100",'
+        '"dashboardUrl":"http://host.docker.internal:9101","color":"#111111","scope":"user"},'
+        '{"id":"pam","name":"PAM","gatewayUrl":"http://host.docker.internal:9110",'
+        '"dashboardUrl":"http://host.docker.internal:9111","color":"#222222","scope":"company",'
+        '"manager_visible":false}'
+        ']'
+    )
     application = FastAPI()
     application.state.config = SimpleNamespace(instance_id="sandbox", hermes_stack_dir=tmp_path)
     application.dependency_overrides[require_bearer] = lambda: None
@@ -171,6 +180,15 @@ def test_status_reachable_by_member(client, monkeypatch):
     assert r.status_code == 200
     assert seen["url"] == "http://127.0.0.1:9119/api/status"
     assert seen["headers"]["X-Hermes-Session-Token"] == "tok-abc"
+
+
+def test_status_denies_unreachable_agent_before_dashboard(client, monkeypatch):
+    _as(monkeypatch, "member")
+    called = []
+    monkeypatch.setattr(manage.httpx, "get", lambda *a, **k: called.append(1) or _Resp())
+    r = client.get("/v1/agents/pam/status", headers={"X-Auth-User-Id": "u-1"})
+    assert r.status_code == 403
+    assert called == []
 
 
 def test_dashboard_unconfigured_503(app, monkeypatch):

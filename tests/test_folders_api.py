@@ -2,6 +2,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.api import authz
 from src.api.folders import router
 from src.auth import require_bearer
 from src.config import Config
@@ -60,6 +61,13 @@ def test_put_and_get_folders(client):
     assert len(result["folders"]) == 1
     assert result["folders"][0]["id"] == "a"
     assert result["folders"][0]["appIds"] == ["x"]
+
+
+def test_member_cannot_put_folders(client, monkeypatch):
+    monkeypatch.setattr(authz.roles, "resolve_tier", lambda instance_id, user_id: "member")
+    payload = {"folders": [{"id": "a", "name": "Listings", "order": 0, "appIds": ["x"]}]}
+    r = client.put("/v1/folders", json=payload, headers={"X-Auth-User-Id": "member-1"})
+    assert r.status_code == 403
 
 
 def test_get_folders_no_auth_returns_401(authed_client):

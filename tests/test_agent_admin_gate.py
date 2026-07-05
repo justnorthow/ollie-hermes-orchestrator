@@ -18,9 +18,27 @@ from src.auth import require_bearer
 
 @pytest.fixture()
 def app(tmp_path):
+    (tmp_path / ".env").write_text(
+        'AGENTS_JSON=['
+        '{"id":"default","name":"Default","gatewayUrl":"http://host.docker.internal:9100",'
+        '"dashboardUrl":"http://host.docker.internal:9101","color":"#111111","scope":"user"},'
+        '{"id":"pam","name":"PAM","gatewayUrl":"http://host.docker.internal:9110",'
+        '"dashboardUrl":"http://host.docker.internal:9111","color":"#222222","scope":"company",'
+        '"manager_visible":false}'
+        ']'
+    )
+    pam_apps = tmp_path / ".hermes" / "profiles" / "pam"
+    pam_apps.mkdir(parents=True)
+    (pam_apps / "apps.json").write_text(
+        '[{"id":"private-app","label":"Private","icon":"","description":"",'
+        '"componentType":"ExternalWebApp","config":{"url":"https://private.example"}}]'
+    )
     application = FastAPI()
     application.state.config = SimpleNamespace(
-        instance_id="sandbox", hermes_stack_dir=tmp_path
+        instance_id="sandbox",
+        hermes_stack_dir=tmp_path,
+        hermes_profiles_dir=tmp_path / ".hermes" / "profiles",
+        hermes_home=tmp_path / ".hermes",
     )
     application.dependency_overrides[require_bearer] = lambda: None
     application.include_router(agents_module.router)
@@ -119,6 +137,24 @@ def test_admin_denied_allows_account_admin(monkeypatch):
 
 def test_reads_stay_open_for_member(client, monkeypatch):
     _as_member(monkeypatch)
-    monkeypatch.setattr(agents_module, "read_agents", lambda path: [])
     r = client.get("/v1/agents", headers=_member_headers())
     assert r.status_code == 200
+
+
+def test_member_agent_list_only_contains_reachable_agents(client, monkeypatch):
+    _as_member(monkeypatch)
+    r = client.get("/v1/agents", headers=_member_headers())
+    assert r.status_code == 200
+    assert [agent["id"] for agent in r.json()["agents"]] == ["default"]
+
+
+def test_member_cannot_get_unreachable_agent(client, monkeypatch):
+    _as_member(monkeypatch)
+    r = client.get("/v1/agents/pam", headers=_member_headers())
+    assert r.status_code == 403
+
+
+def test_member_cannot_list_unreachable_agent_apps(client, monkeypatch):
+    _as_member(monkeypatch)
+    r = client.get("/v1/agents/pam/apps", headers=_member_headers())
+    assert r.status_code == 403

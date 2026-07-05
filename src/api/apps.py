@@ -69,6 +69,9 @@ def _require_agent(agent_id: str, cfg: Config) -> None:
 async def list_apps(agent_id: str, request: Request) -> dict:
     cfg = request.app.state.config
     _require_agent(agent_id, cfg)
+    denied = authz.check_agent_access(request, agent_id, cfg)
+    if denied:
+        return denied
     return {"apps": _read_apps(agent_id, cfg)}
 
 

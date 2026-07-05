@@ -34,12 +34,16 @@ def _entry_to_agent(e, cfg: Config | None = None) -> dict:
 async def list_agents(request: Request) -> dict:
     cfg = request.app.state.config
     entries = read_agents(cfg.hermes_stack_dir / ".env")
-    return {"agents": [_entry_to_agent(e, cfg) for e in entries]}
+    reachable = set(authz.reachable_agent_ids(request, cfg))
+    return {"agents": [_entry_to_agent(e, cfg) for e in entries if e.id in reachable]}
 
 
 @router.get("/{agent_id}")
 async def get_agent(agent_id: str, request: Request) -> dict:
     cfg = request.app.state.config
+    denied = authz.check_agent_access(request, agent_id, cfg)
+    if denied:
+        return denied
     entries = read_agents(cfg.hermes_stack_dir / ".env")
     e = next((x for x in entries if x.id == agent_id), None)
     if not e:

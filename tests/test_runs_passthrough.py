@@ -25,6 +25,7 @@ def client(monkeypatch):
 
 def test_stop_forwards(client, monkeypatch):
     calls = []
+    runs._RUN_OWNERS["r1"] = USER_A
     monkeypatch.setattr(runs, "_gateway_post",
                         lambda agent, path, body=b"": calls.append((agent, path)) or (200, b"{}"))
     r = client.post("/v1/runs/real-estate/r1/stop", headers={"X-Auth-User-Id": USER_A})
@@ -41,6 +42,7 @@ def test_stop_403_for_foreign_run(client, monkeypatch):
 
 def test_approval_forwards_body(client, monkeypatch):
     calls = []
+    runs._RUN_OWNERS["r1"] = USER_A
 
     def fake_post(agent, path, body=b""):
         calls.append((path, json.loads(body)))
@@ -57,6 +59,23 @@ def test_approval_forwards_body(client, monkeypatch):
 def test_list_runs_forwards_query(client, monkeypatch):
     calls = []
     monkeypatch.setattr(runs, "_gateway_get", lambda agent, path: calls.append(path) or (200, b"[]"))
-    r = client.get("/v1/runs/real-estate?status=pending_approval", headers={"X-Auth-User-Id": USER_A})
+    r = client.get("/v1/runs/real-estate?status=pending_approval")
     assert r.status_code == 200
     assert calls == ["/v1/runs?status=pending_approval"]
+
+
+def test_member_cannot_list_agent_runs(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(runs, "_gateway_get", lambda agent, path: calls.append(path) or (200, b"[]"))
+    r = client.get("/v1/runs/real-estate?status=pending_approval", headers={"X-Auth-User-Id": USER_A})
+    assert r.status_code == 403
+    assert calls == []
+
+
+def test_unknown_run_owner_is_forbidden_for_identified_user(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(runs, "_gateway_post",
+                        lambda agent, path, body=b"": calls.append((agent, path)) or (200, b"{}"))
+    r = client.post("/v1/runs/real-estate/r-unknown/stop", headers={"X-Auth-User-Id": USER_A})
+    assert r.status_code == 403
+    assert calls == []

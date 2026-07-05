@@ -71,6 +71,11 @@ def _forward_headers(request: Request) -> dict:
 def agent_status(agent: str, request: Request):
     """Member-reachable dashboard status passthrough (chat polls it). Ungated on
     tier by design — deliberately outside the admin management allowlist."""
+    cfg = getattr(request.app.state, "config", None)
+    if cfg is not None:
+        denied = authz.check_agent_access(request, agent, cfg)
+        if denied:
+            return denied
     base = _dashboard_base(agent)
     if not base:
         return JSONResponse({"detail": "Dashboard proxy not configured"}, status_code=503)

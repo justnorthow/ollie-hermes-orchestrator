@@ -9,6 +9,13 @@ from src.config import Config
 _HERMES_BIN = "hermes"
 
 
+def _require_single_line_env(name: str, value: str) -> None:
+    if any(ch in name for ch in "=\r\n") or not name:
+        raise ValueError("env keys must be non-empty single-line names without '='")
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"{name} must be a single-line value")
+
+
 def _resolve(bin_name: str) -> str:
     """Resolve a binary on PATH. On Windows this picks up PATHEXT (.cmd/.bat/.exe)."""
     resolved = shutil.which(bin_name)
@@ -53,6 +60,15 @@ def write_profile_env(
     api_server_cors: str = "*",
 ) -> None:
     path = _profiles_dir() / name / ".env"
+    for k, v in provider_creds.items():
+        _require_single_line_env(k, v)
+    for k, v in {
+        "API_SERVER_HOST": api_server_host,
+        "API_SERVER_PORT": str(api_server_port),
+        "API_SERVER_KEY": api_server_key,
+        "API_SERVER_CORS_ORIGINS": api_server_cors,
+    }.items():
+        _require_single_line_env(k, v)
     lines = [f"{k}={v}" for k, v in provider_creds.items()]
     lines += [
         "API_SERVER_ENABLED=true",

@@ -13,6 +13,7 @@ def test_load_uses_defaults_when_paths_unset(monkeypatch, tmp_path):
     monkeypatch.setenv("ORCHESTRATOR_KEY", "secret")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_STACK_DIR", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.delenv("HERMES_PROFILES_DIR", raising=False)
     monkeypatch.delenv("SYSTEMD_USER_DIR", raising=False)
 

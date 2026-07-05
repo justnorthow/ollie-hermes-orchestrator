@@ -1,4 +1,3 @@
-import logging
 import os
 from fastapi import FastAPI
 from src.config import Config
@@ -15,9 +14,6 @@ from src.api.runs import router as runs_router
 from src.api.sessions import router as sessions_router
 from src.api.admin import router as admin_router
 from src.api.manage import router as manage_router
-
-_logger = logging.getLogger(__name__)
-
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ollie-orchestrator")
@@ -50,10 +46,7 @@ def create_app() -> FastAPI:
 # smoke tests still work without requiring the full env to be configured.
 def _build_or_placeholder() -> FastAPI:
     if os.environ.get("ORCHESTRATOR_KEY"):
-        try:
-            return create_app()
-        except Exception:
-            _logger.exception("create_app failed at import time; falling back to placeholder")
+        return create_app()
     placeholder = FastAPI()
 
     @placeholder.get("/healthz")
