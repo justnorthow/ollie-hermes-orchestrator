@@ -210,3 +210,122 @@ def test_touch_session_noop_without_supabase_config(monkeypatch):
     monkeypatch.setattr(sessions.httpx, "patch", lambda *a, **kw: called.append(True))
     sessions.touch_session("real-estate", "s-1")
     assert called == []
+
+
+def test_record_run_owner_posts_with_on_conflict_and_ignore_duplicates(monkeypatch):
+    """record_run_owner POSTs to /rest/v1/run_owners with on_conflict=run_id and
+    the ignore-duplicates Prefer header, mirroring record_session."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+    calls = []
+
+    class FakeResp:
+        status_code = 201
+
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, params=None, headers=None, json=None, timeout=None):
+        calls.append((url, params, headers, json))
+        return FakeResp()
+
+    monkeypatch.setattr(sessions.httpx, "post", fake_post)
+    sessions.record_run_owner("run-1", USER_A)
+
+    assert len(calls) == 1
+    url, params, headers, body = calls[0]
+    assert url == "https://test.supabase.co/rest/v1/run_owners"
+    assert params == {"on_conflict": "run_id"}
+    assert headers["apikey"] == "svc-key"
+    assert headers["Authorization"] == "Bearer svc-key"
+    assert headers["Prefer"] == "resolution=ignore-duplicates,return=minimal"
+    assert body == {"run_id": "run-1", "user_id": USER_A}
+
+
+def test_record_run_owner_never_raises_on_failure(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+
+    def fake_post(*a, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sessions.httpx, "post", fake_post)
+    sessions.record_run_owner("run-1", USER_A)  # must not raise
+
+
+def test_record_run_owner_noop_without_supabase_config(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    called = []
+    monkeypatch.setattr(sessions.httpx, "post", lambda *a, **kw: called.append(True))
+    sessions.record_run_owner("run-1", USER_A)
+    assert called == []
+
+
+def test_get_run_owner_returns_user_id(monkeypatch):
+    """get_run_owner GETs /rest/v1/run_owners filtered by run_id and returns
+    the owning user_id, mirroring get_session_owner."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+    calls = []
+
+    class FakeResp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{"user_id": USER_A}]
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append((url, params, headers))
+        return FakeResp()
+
+    monkeypatch.setattr(sessions.httpx, "get", fake_get)
+    result = sessions.get_run_owner("run-1")
+
+    assert result == USER_A
+    assert len(calls) == 1
+    url, params, headers = calls[0]
+    assert url == "https://test.supabase.co/rest/v1/run_owners"
+    assert params == {"run_id": "eq.run-1", "select": "user_id"}
+    assert headers["apikey"] == "svc-key"
+    assert headers["Authorization"] == "Bearer svc-key"
+
+
+def test_get_run_owner_returns_none_when_no_rows(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+
+    class FakeResp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+    monkeypatch.setattr(sessions.httpx, "get", lambda *a, **kw: FakeResp())
+    assert sessions.get_run_owner("run-unknown") is None
+
+
+def test_get_run_owner_returns_none_on_failure(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+
+    def fake_get(*a, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sessions.httpx, "get", fake_get)
+    assert sessions.get_run_owner("run-1") is None
+
+
+def test_get_run_owner_noop_without_supabase_config(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    called = []
+    monkeypatch.setattr(sessions.httpx, "get", lambda *a, **kw: called.append(True))
+    assert sessions.get_run_owner("run-1") is None
+    assert called == []

@@ -125,6 +125,46 @@ def touch_session(agent: str, session_id: str) -> None:
         _logger.warning("touch_session failed", exc_info=True)
 
 
+def get_run_owner(run_id: str) -> str | None:
+    """user_id owning run_id, or None if unowned/unknown/store unavailable."""
+    sb = _sb()
+    if not sb:
+        return None
+    url, key = sb
+    try:
+        resp = httpx.get(
+            f"{url}/rest/v1/run_owners",
+            params={"run_id": f"eq.{run_id}", "select": "user_id"},
+            headers=_sb_headers(key), timeout=10.0,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0]["user_id"] if rows else None
+    except Exception:
+        _logger.warning("get_run_owner failed", exc_info=True)
+        return None
+
+
+def record_run_owner(run_id: str, user_id: str) -> None:
+    """Insert a run-ownership row if absent. Best-effort: never raises, never overwrites."""
+    sb = _sb()
+    if not sb:
+        return
+    url, key = sb
+    try:
+        resp = httpx.post(
+            f"{url}/rest/v1/run_owners",
+            params={"on_conflict": "run_id"},
+            headers={**_sb_headers(key),
+                     "Prefer": "resolution=ignore-duplicates,return=minimal"},
+            json={"run_id": run_id, "user_id": user_id},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+    except Exception:
+        _logger.warning("record_run_owner failed", exc_info=True)
+
+
 def _list_user_rows(agent: str, user_id: str) -> list[dict]:
     sb = _sb()
     if not sb:
