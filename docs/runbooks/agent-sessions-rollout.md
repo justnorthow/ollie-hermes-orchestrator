@@ -108,6 +108,13 @@ unexpected (no session-id is in play yet); recheck the header name and value.
 
 ## 4. Backfill existing sessions
 
+**REQUIRED gate — do NOT proceed to the frontend cutover (Step 5) until this
+completes and is confirmed below.** The frontend cutover makes the
+orchestrator's ownership check fail-closed: once it's live, any pre-existing
+Hermes session that hasn't been claimed in `agent_sessions` will 403 for its
+own creator. This step is what claims them first, so skipping it locks
+everyone out of their own history the moment Step 5 ships.
+
 On the box, with `BACKFILL_USER_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
 and `HERMES_DASHBOARD_URLS` present in the environment:
 
@@ -124,7 +131,7 @@ Nothing is written yet.
 BACKFILL_USER_ID=<john-uuid> python3 scripts/backfill_sessions.py
 ```
 
-Re-run the Step 3 curl:
+**Confirm it ran** — re-run the Step 3 curl:
 
 ```bash
 curl -s -H "Authorization: Bearer $ORCHESTRATOR_KEY" \
@@ -133,8 +140,17 @@ curl -s -H "Authorization: Bearer $ORCHESTRATOR_KEY" \
 ```
 
 Expect the previously-existing Hermes sessions listed now, each with `id`,
-`title`, `createdAt`, `lastActiveAt`. The script is idempotent (insert uses
-`ignore-duplicates`) — safe to re-run if interrupted.
+`title`, `createdAt`, `lastActiveAt`. This is the confirmation that matters:
+if the list is still empty (or missing sessions you know exist in Hermes),
+the backfill did not claim them — do not proceed to Step 5 until it does.
+Each `agent_sessions` row's `user_id` should be the operator UUID passed as
+`BACKFILL_USER_ID`.
+
+The script is idempotent (insert uses `on_conflict=agent_id,hermes_session_id`
+with `ignore-duplicates`) — safe to re-run if interrupted, since it never
+double-inserts a session or overwrites an existing owner. This guarantee is
+now regression-locked by
+`tests/test_backfill_sessions.py::test_backfill_post_is_idempotent_upsert`.
 
 ## 5. Frontend image
 

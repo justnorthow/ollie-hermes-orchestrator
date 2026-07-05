@@ -32,6 +32,40 @@ def test_backfill_sends_dashboard_session_token(monkeypatch):
     assert captured["headers"]["X-Hermes-Session-Token"] == "tok-123"
 
 
+def test_backfill_post_is_idempotent_upsert(monkeypatch):
+    """Regression lock: the backfill POST must always carry the on_conflict
+    upsert target + ignore-duplicates Prefer header. This is what makes the
+    one-time backfill safe to re-run — it never double-inserts a session and
+    never overwrites an existing owner. If a future edit drops these, this
+    test must fail."""
+    monkeypatch.setenv("BACKFILL_USER_ID", "u-1")
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
+    monkeypatch.setenv("HERMES_DASHBOARD_URLS", '{"default":"http://localhost:9119"}')
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return [{"id": "s-1", "title": "t"}]
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        return _Resp()
+
+    def fake_post(url, params=None, headers=None, json=None, timeout=None):
+        captured.update(params=params, headers=headers, json=json)
+        return _Resp()
+
+    monkeypatch.setattr(backfill.httpx, "get", fake_get)
+    monkeypatch.setattr(backfill.httpx, "post", fake_post)
+    assert backfill.main() == 0
+    # The idempotency guarantee: never double-insert, never overwrite an owner.
+    assert captured["params"]["on_conflict"] == "agent_id,hermes_session_id"
+    assert captured["headers"]["Prefer"] == "resolution=ignore-duplicates,return=minimal"
+
+
 def test_rows_from_sessions_maps_and_skips_blank_ids():
     sessions = [
         {"id": "s-1", "title": "Hello"},
