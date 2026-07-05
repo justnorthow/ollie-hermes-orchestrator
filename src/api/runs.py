@@ -21,9 +21,11 @@ PROHIBITIONS = load_prohibitions()
 
 from src.api import sessions as _sessions_store
 
-# run_id -> creating user's Supabase UUID. In-memory (restart loses it; the
-# events-side check then falls through to allow — acceptable v1: run ids are
-# unguessable and expire quickly).
+# run_id -> creating user's Supabase UUID. In-memory cache; also persisted to the
+# run_owners table (see sessions.record_run_owner) so the fail-closed run gate
+# survives a restart. When Supabase is unset the cache is memory-only and a restart
+# drops it — the gate then fail-closed-denies a member's own in-flight runs until
+# they start a new one (acceptable: run ids are unguessable and short-lived).
 _RUN_OWNERS: dict[str, str] = {}
 _RUN_OWNERS_MAX = 5000
 
@@ -92,6 +94,10 @@ def _remember_run_owner(run_id: str, user_id: str) -> None:
     if len(_RUN_OWNERS) >= _RUN_OWNERS_MAX:
         _RUN_OWNERS.pop(next(iter(_RUN_OWNERS)))
     _RUN_OWNERS[run_id] = user_id
+    try:
+        _sessions_store.record_run_owner(run_id, user_id)
+    except Exception:
+        pass
 
 
 def _extract_session_id_from_body(body: bytes) -> str | None:
@@ -300,8 +306,14 @@ async def create_run(agent: str, request: Request):
 
 def _run_owner_gate(request: Request, run_id: str) -> JSONResponse | None:
     user_id = request.headers.get("X-Auth-User-Id", "").strip()
+    if not user_id:
+        return None  # identity-less internal callers hold the bearer key
     owner = _RUN_OWNERS.get(run_id)
-    if user_id and owner != user_id:
+    if owner is None:
+        owner = _sessions_store.get_run_owner(run_id)  # survives restart when Supabase is set
+        if owner is not None:
+            _RUN_OWNERS[run_id] = owner  # repopulate the in-memory cache
+    if owner != user_id:
         return JSONResponse({"detail": "Run not found"}, status_code=403)
     return None
 

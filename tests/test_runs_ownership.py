@@ -266,6 +266,24 @@ def test_session_captured_before_client_disconnect_drains_stream(client, monkeyp
     assert recorded == [("real-estate", "s-disc", USER_A)]
 
 
+def test_gate_falls_back_to_persisted_owner_after_restart(client, monkeypatch):
+    """Simulates an orchestrator restart: the in-memory _RUN_OWNERS cache is
+    empty, but the run_owners row survived in Supabase. The gate must consult
+    _sessions_store.get_run_owner on a memory miss and repopulate the cache --
+    the real owner keeps access, a different user still gets 403."""
+    monkeypatch.setattr(runs._sessions_store, "get_run_owner",
+                        lambda run_id: USER_A if run_id == "r-restart" else None)
+    runs._RUN_OWNERS.clear()  # simulate restart: no in-memory cache
+
+    monkeypatch.setattr(runs, "_gateway_post", lambda agent, path, body=b"": (200, b"{}"))
+    r_owner = client.post("/v1/runs/real-estate/r-restart/stop", headers={"X-Auth-User-Id": USER_A})
+    assert r_owner.status_code == 200
+    assert runs._RUN_OWNERS["r-restart"] == USER_A  # cache repopulated
+
+    r_other = client.post("/v1/runs/real-estate/r-restart/stop", headers={"X-Auth-User-Id": USER_B})
+    assert r_other.status_code == 403
+
+
 def test_governed_path_records_at_most_once_and_bytes_unchanged(client, monkeypatch):
     """Governed branch: confirm the existing scan-after-buffering approach
     still records at most once and does not alter delivered bytes."""
