@@ -122,3 +122,42 @@ def test_rows_from_sessions_ignores_non_string_timestamp_values():
     rows = rows_from_sessions("real-estate", sessions, "uuid-john")
     assert "created_at" not in rows[0]
     assert "last_active_at" not in rows[0]
+
+
+def test_rows_from_sessions_stamps_instance_id_when_given():
+    """Instance scoping (cross-instance session bleed fix, 2026-07-07): the
+    orchestrator's reads filter agent_sessions by INSTANCE_ID, so backfilled
+    rows must carry it or they become invisible to the box that owns them."""
+    rows = rows_from_sessions("real-estate", [{"id": "s-1"}], "uuid-john", "sandbox")
+    assert rows[0]["instance_id"] == "sandbox"
+
+
+def test_rows_from_sessions_omits_instance_id_when_absent():
+    rows = rows_from_sessions("real-estate", [{"id": "s-1"}], "uuid-john")
+    assert "instance_id" not in rows[0]
+
+
+def test_backfill_main_stamps_instance_from_env(monkeypatch):
+    monkeypatch.setenv("BACKFILL_USER_ID", "u-1")
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")
+    monkeypatch.setenv("HERMES_DASHBOARD_URLS", '{"default":"http://localhost:9119"}')
+    monkeypatch.setenv("INSTANCE_ID", "sandbox")
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return [{"id": "s-1"}]
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(backfill.httpx, "get", lambda *a, **kw: _Resp())
+
+    def fake_post(url, params=None, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _Resp()
+
+    monkeypatch.setattr(backfill.httpx, "post", fake_post)
+    assert backfill.main() == 0
+    assert captured["json"][0]["instance_id"] == "sandbox"

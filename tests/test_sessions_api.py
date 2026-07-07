@@ -177,13 +177,15 @@ def test_touch_session_patches_last_active_at(monkeypatch):
         calls.append((url, params, headers, json))
         return FakeResp()
 
+    monkeypatch.delenv("INSTANCE_ID", raising=False)
     monkeypatch.setattr(sessions.httpx, "patch", fake_patch)
     sessions.touch_session("real-estate", "s-1")
 
     assert len(calls) == 1
     url, params, headers, body = calls[0]
     assert url == "https://test.supabase.co/rest/v1/agent_sessions"
-    assert params == {"agent_id": "eq.real-estate", "hermes_session_id": "eq.s-1"}
+    assert params == {"agent_id": "eq.real-estate", "hermes_session_id": "eq.s-1",
+                      "instance_id": "is.null"}
     assert headers["apikey"] == "svc-key"
     assert headers["Authorization"] == "Bearer svc-key"
     assert "last_active_at" in body
@@ -329,3 +331,106 @@ def test_get_run_owner_noop_without_supabase_config(monkeypatch):
     monkeypatch.setattr(sessions.httpx, "get", lambda *a, **kw: called.append(True))
     assert sessions.get_run_owner("run-1") is None
     assert called == []
+
+
+# --- instance scoping (cross-instance session bleed fix, 2026-07-07) ---------
+# agent_sessions is shared per Supabase project; when two boxes shared one
+# project, each box's owner-filtered reads returned the OTHER box's rows too
+# (list showed foreign session ids; messages proxied to the local Hermes and
+# 404'd). Every agent_sessions read/write must therefore scope to this box's
+# INSTANCE_ID — eq.<id> when set, is.null when unset (single-box installs whose
+# rows were written without an instance tag).
+
+
+class _JsonResp:
+    def __init__(self, payload=None, status_code=200):
+        self._payload = payload if payload is not None else []
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def _sb_env(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc-key")
+
+
+def test_get_session_owner_scopes_to_instance_when_set(monkeypatch):
+    _sb_env(monkeypatch)
+    monkeypatch.setenv("INSTANCE_ID", "sandbox")
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "get",
+                        lambda url, params=None, headers=None, timeout=None:
+                        calls.append(params) or _JsonResp([{"user_id": USER_A}]))
+    assert sessions.get_session_owner("real-estate", "s-1") == USER_A
+    assert calls[0]["instance_id"] == "eq.sandbox"
+
+
+def test_get_session_owner_scopes_to_null_instance_when_unset(monkeypatch):
+    _sb_env(monkeypatch)
+    monkeypatch.delenv("INSTANCE_ID", raising=False)
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "get",
+                        lambda url, params=None, headers=None, timeout=None:
+                        calls.append(params) or _JsonResp([]))
+    sessions.get_session_owner("real-estate", "s-1")
+    assert calls[0]["instance_id"] == "is.null"
+
+
+def test_record_session_stamps_instance_id_when_set(monkeypatch):
+    _sb_env(monkeypatch)
+    monkeypatch.setenv("INSTANCE_ID", "sandbox")
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "post",
+                        lambda url, params=None, headers=None, json=None, timeout=None:
+                        calls.append(json) or _JsonResp(status_code=201))
+    sessions.record_session("real-estate", "s-1", USER_A)
+    assert calls[0]["instance_id"] == "sandbox"
+
+
+def test_record_session_omits_instance_id_when_unset(monkeypatch):
+    _sb_env(monkeypatch)
+    monkeypatch.delenv("INSTANCE_ID", raising=False)
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "post",
+                        lambda url, params=None, headers=None, json=None, timeout=None:
+                        calls.append(json) or _JsonResp(status_code=201))
+    sessions.record_session("real-estate", "s-1", USER_A)
+    assert "instance_id" not in calls[0]
+
+
+def test_list_user_rows_scopes_to_instance(monkeypatch):
+    _sb_env(monkeypatch)
+    monkeypatch.setenv("INSTANCE_ID", "sandbox")
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "get",
+                        lambda url, params=None, headers=None, timeout=None:
+                        calls.append(params) or _JsonResp([]))
+    sessions._list_user_rows("real-estate", USER_A)
+    assert calls[0]["instance_id"] == "eq.sandbox"
+
+
+def test_touch_session_scopes_to_instance(monkeypatch):
+    _sb_env(monkeypatch)
+    monkeypatch.setenv("INSTANCE_ID", "sandbox")
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "patch",
+                        lambda url, params=None, headers=None, json=None, timeout=None:
+                        calls.append(params) or _JsonResp(status_code=204))
+    sessions.touch_session("real-estate", "s-1")
+    assert calls[0]["instance_id"] == "eq.sandbox"
+
+
+def test_delete_row_scopes_to_instance(monkeypatch):
+    _sb_env(monkeypatch)
+    monkeypatch.setenv("INSTANCE_ID", "sandbox")
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "delete",
+                        lambda url, params=None, headers=None, timeout=None:
+                        calls.append(params) or _JsonResp(status_code=204))
+    sessions._delete_row("real-estate", "s-1")
+    assert calls[0]["instance_id"] == "eq.sandbox"

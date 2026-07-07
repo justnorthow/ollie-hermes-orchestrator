@@ -60,6 +60,24 @@ def _sb() -> tuple[str, str] | None:
     return (url, key) if url and key else None
 
 
+def _instance_id() -> str | None:
+    iid = os.environ.get("INSTANCE_ID", "").strip()
+    return iid or None
+
+
+def _instance_filter() -> str:
+    """PostgREST filter scoping agent_sessions rows to THIS box's instance.
+
+    Cross-instance session bleed fix (2026-07-07): agent_sessions lives per
+    Supabase project, and when two boxes shared one project the owner-filtered
+    reads returned the other box's rows too — the transcripts list showed
+    foreign session ids whose message reads then 404'd against the local
+    Hermes. eq.<INSTANCE_ID> when set; is.null when unset, matching rows
+    written by single-box installs that never stamped an instance."""
+    iid = _instance_id()
+    return f"eq.{iid}" if iid else "is.null"
+
+
 def _sb_headers(key: str) -> dict:
     return {"apikey": key, "Authorization": f"Bearer {key}",
             "Content-Type": "application/json"}
@@ -75,7 +93,7 @@ def get_session_owner(agent: str, session_id: str) -> str | None:
         resp = httpx.get(
             f"{url}/rest/v1/agent_sessions",
             params={"agent_id": f"eq.{agent}", "hermes_session_id": f"eq.{session_id}",
-                    "select": "user_id"},
+                    "instance_id": _instance_filter(), "select": "user_id"},
             headers=_sb_headers(key), timeout=10.0,
         )
         resp.raise_for_status()
@@ -92,13 +110,16 @@ def record_session(agent: str, session_id: str, user_id: str) -> None:
     if not sb:
         return
     url, key = sb
+    body = {"agent_id": agent, "hermes_session_id": session_id, "user_id": user_id}
+    if _instance_id():
+        body["instance_id"] = _instance_id()
     try:
         resp = httpx.post(
             f"{url}/rest/v1/agent_sessions",
             params={"on_conflict": "agent_id,hermes_session_id"},
             headers={**_sb_headers(key),
                      "Prefer": "resolution=ignore-duplicates,return=minimal"},
-            json={"agent_id": agent, "hermes_session_id": session_id, "user_id": user_id},
+            json=body,
             timeout=10.0,
         )
         resp.raise_for_status()
@@ -115,7 +136,8 @@ def touch_session(agent: str, session_id: str) -> None:
     try:
         resp = httpx.patch(
             f"{url}/rest/v1/agent_sessions",
-            params={"agent_id": f"eq.{agent}", "hermes_session_id": f"eq.{session_id}"},
+            params={"agent_id": f"eq.{agent}", "hermes_session_id": f"eq.{session_id}",
+                    "instance_id": _instance_filter()},
             headers=_sb_headers(key),
             json={"last_active_at": datetime.now(timezone.utc).isoformat()},
             timeout=10.0,
@@ -173,6 +195,7 @@ def _list_user_rows(agent: str, user_id: str) -> list[dict]:
     resp = httpx.get(
         f"{url}/rest/v1/agent_sessions",
         params={"agent_id": f"eq.{agent}", "user_id": f"eq.{user_id}",
+                "instance_id": _instance_filter(),
                 "select": "hermes_session_id,title,created_at,last_active_at",
                 "order": "last_active_at.desc", "limit": "100"},
         headers=_sb_headers(key), timeout=10.0,
@@ -189,7 +212,8 @@ def _delete_row(agent: str, session_id: str) -> None:
     try:
         httpx.delete(
             f"{url}/rest/v1/agent_sessions",
-            params={"agent_id": f"eq.{agent}", "hermes_session_id": f"eq.{session_id}"},
+            params={"agent_id": f"eq.{agent}", "hermes_session_id": f"eq.{session_id}",
+                    "instance_id": _instance_filter()},
             headers=_sb_headers(key), timeout=10.0,
         ).raise_for_status()
     except Exception:

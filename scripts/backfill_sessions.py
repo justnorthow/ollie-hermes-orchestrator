@@ -24,7 +24,8 @@ def _first_str(s: dict, *keys: str) -> str | None:
     return None
 
 
-def rows_from_sessions(agent: str, sessions: list[dict], user_id: str) -> list[dict]:
+def rows_from_sessions(agent: str, sessions: list[dict], user_id: str,
+                       instance_id: str | None = None) -> list[dict]:
     rows = []
     for s in sessions:
         sid = s.get("id")
@@ -32,6 +33,10 @@ def rows_from_sessions(agent: str, sessions: list[dict], user_id: str) -> list[d
             continue
         row = {"agent_id": agent, "hermes_session_id": sid,
                "user_id": user_id, "title": s.get("title") or None}
+        # Instance scoping (2026-07-07): the orchestrator filters agent_sessions
+        # by INSTANCE_ID, so rows without it are invisible to the owning box.
+        if instance_id:
+            row["instance_id"] = instance_id
         # Hermes dashboard /api/sessions items carry camelCase createdAt/updatedAt
         # (see HermesSession in the frontend); handle snake_case variants
         # defensively too. Omit the keys entirely when absent so DB defaults
@@ -57,6 +62,7 @@ def main() -> int:
         return 1
     dash_token = os.environ.get("HERMES_DASHBOARD_TOKEN", "").strip()
     dash_headers = {"X-Hermes-Session-Token": dash_token} if dash_token else {}
+    instance_id = os.environ.get("INSTANCE_ID", "").strip() or None
     total = 0
     for agent, base in dash_map.items():
         resp = httpx.get(f"{str(base).rstrip('/')}/api/sessions", params={"limit": 500},
@@ -64,7 +70,7 @@ def main() -> int:
         resp.raise_for_status()
         data = resp.json()
         sessions = data if isinstance(data, list) else data.get("sessions", [])
-        rows = rows_from_sessions(agent, sessions, user_id)
+        rows = rows_from_sessions(agent, sessions, user_id, instance_id)
         print(f"{agent}: {len(rows)} sessions")
         total += len(rows)
         if dry or not rows:

@@ -15,6 +15,26 @@ Before starting, record the pre-rollout orchestrator SHA on each box —
 `git rev-parse HEAD` in `~/ollie-hermes-orchestrator` — Rollback (Step 7)
 depends on it.
 
+## 0. Instance-scoping cutover (added 2026-07-07)
+
+`agent_sessions` reads/writes are now scoped to the box's `INSTANCE_ID`
+(`eq.<id>` when set, `is.null` when unset) — the fix for the cross-instance
+session bleed found when sandbox and jnow prod shared one Supabase project.
+When deploying an orchestrator at or past this change to a box whose project
+has pre-existing rows, sweep legacy null rows to the box's instance FIRST or
+they become invisible:
+
+```bash
+# on the box; SB/K from ~/.config/ollie-orchestrator/.env
+curl -X PATCH "$SB/rest/v1/agent_sessions?instance_id=is.null" \
+  -H "apikey: $K" -H "Authorization: Bearer $K" \
+  -H "Content-Type: application/json" -d "{\"instance_id\":\"$INSTANCE_ID\"}"
+```
+
+Safe only under one-project-per-instance (the standing policy since
+2026-07-07); on a still-shared project the null rows must be attributed
+per-box by hand instead. Done for sandbox (588 rows) on 2026-07-07.
+
 ## 1. Apply the migration
 
 Migration file: `development/core/supabase/migrations/0011_agent_sessions.sql`
