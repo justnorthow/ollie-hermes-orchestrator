@@ -74,6 +74,9 @@ def test_new_session_recorded_from_stream(client, monkeypatch):
     monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
     r = _post_run(client, user=USER_A)  # no session_id -> new session
     assert r.status_code == 200
+    # create_run pre-claims the run id as a thread id (see the run-id-fallback
+    # tests below); the stream capture then adds the real Hermes session id.
+    assert recorded == [("real-estate", "r7", USER_A)]
 
     async def fake_stream(base, run_id):
         yield b'data: {"event":"message.delta","delta":"hi"}\n\n'
@@ -82,7 +85,55 @@ def test_new_session_recorded_from_stream(client, monkeypatch):
     monkeypatch.setattr(runs, "_stream_upstream", fake_stream)
     r2 = client.get("/v1/runs/real-estate/r7/events", headers={"X-Auth-User-Id": USER_A})
     assert r2.status_code == 200
-    assert recorded == [("real-estate", "s-new", USER_A)]
+    assert recorded == [("real-estate", "r7", USER_A), ("real-estate", "s-new", USER_A)]
+
+
+# --- run-id-as-thread-id pre-claim (multi-turn chat 403 fix, 2026-07-07) -----
+# Hermes v0.18 emits NO session_id in run SSE frames for a thread's first run,
+# so the frontend's done-event fallback (threadId = session_id ?? run_id) sends
+# the FIRST run's id back as session_id on the user's second message. Nothing
+# had recorded ownership of that id, so the Phase-1 gate 403'd message 2 of
+# every new chat. create_run therefore pre-claims the run id as a thread id
+# for identified new-thread runs.
+
+
+def test_new_thread_run_id_preclaimed_at_create(client, monkeypatch):
+    monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r7"}'))
+    recorded = []
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    r = _post_run(client, user=USER_A)  # no session_id -> new thread
+    assert r.status_code == 200
+    assert recorded == [("real-estate", "r7", USER_A)]
+
+
+def test_continue_run_does_not_preclaim_run_id(client, monkeypatch):
+    """Continuing an owned thread keeps its session id; the run id is never
+    reused as a thread id, so don't write noise rows for it."""
+    monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r8"}'))
+    monkeypatch.setattr(runs, "_session_owner", lambda a, s: USER_A)
+    recorded = []
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    r = _post_run(client, session_id="s-1", user=USER_A)
+    assert r.status_code == 200
+    assert recorded == []
+
+
+def test_identity_less_run_not_preclaimed(client, monkeypatch):
+    monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r9"}'))
+    recorded = []
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    r = _post_run(client, user=None)
+    assert r.status_code == 200
+    assert recorded == []
+
+
+def test_failed_create_not_preclaimed(client, monkeypatch):
+    monkeypatch.setattr(runs, "_create_run", lambda a, b: (502, b'{"detail":"upstream down"}'))
+    recorded = []
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    r = _post_run(client, user=USER_A)
+    assert r.status_code == 502
+    assert recorded == []
 
 
 def test_events_403_for_foreign_run(client, monkeypatch):
@@ -196,7 +247,9 @@ def test_large_run_completed_frame_still_captures_session(client, monkeypatch):
     r2 = client.get("/v1/runs/real-estate/r-big/events", headers={"X-Auth-User-Id": USER_A})
     assert r2.status_code == 200
     assert r2.content == frame  # delivered bytes are byte-identical to upstream
-    assert recorded == [("real-estate", "s-big", USER_A)]
+    # First entry is create_run's run-id pre-claim (new-thread run); the
+    # oversized frame's real session id must still be captured after it.
+    assert recorded == [("real-estate", "r-big", USER_A), ("real-estate", "s-big", USER_A)]
 
 
 def test_session_captured_before_client_disconnect_drains_stream(client, monkeypatch):
@@ -308,4 +361,5 @@ def test_governed_path_records_at_most_once_and_bytes_unchanged(client, monkeypa
         headers={"X-Auth-User-Id": USER_A, "X-Gov-App": "newsletter"},
     )
     assert r2.status_code == 200
-    assert recorded == [("real-estate", "s-gov", USER_A)]
+    # Run-id pre-claim at create, then at most ONE stream capture.
+    assert recorded == [("real-estate", "r-gov", USER_A), ("real-estate", "s-gov", USER_A)]

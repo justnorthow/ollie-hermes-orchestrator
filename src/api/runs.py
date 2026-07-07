@@ -299,6 +299,15 @@ async def create_run(agent: str, request: Request):
             run_id = json.loads(content).get("run_id")
             if isinstance(run_id, str) and run_id:
                 _remember_run_owner(run_id, user_id)
+                if not session_id:
+                    # Pre-claim the run id as a thread id (2026-07-07): Hermes
+                    # v0.18 emits no session_id in a first run's SSE frames, so
+                    # the frontend's done-event fallback reuses THIS run id as
+                    # session_id on the thread's next message. Without a row
+                    # for it the Phase-1 gate 403'd message 2 of every new
+                    # chat. Idempotent insert; harmless if Hermes later names
+                    # the session itself (the stream capture records that id).
+                    _record_session(agent, run_id, user_id)
         except Exception:
             pass
     return Response(content=content, status_code=status, media_type="application/json")
