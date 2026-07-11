@@ -167,6 +167,54 @@ def test_unconfigured_secret_is_503(monkeypatch):
     assert r.status_code == 503
 
 
+def test_es256_issuer_override_env(monkeypatch, ec_keypair):
+    """SUPABASE_ISSUER overrides the SUPABASE_URL-derived issuer expectation —
+    the self-hosted split (loopback API URL, public token issuer)."""
+    private_pem, public_key = ec_keypair
+    now = int(time.time())
+    public_issuer = "https://sb-esource.getbilled.io/auth/v1"
+    token = jwt.encode(
+        {"aud": "authenticated", "iss": public_issuer, "sub": "u-3",
+         "email": "lo@example.com", "iat": now, "exp": now + 60},
+        private_pem, algorithm="ES256", headers={"kid": "test-kid"},
+    )
+    cookie_val = _wrap_token(token)
+    monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("SUPABASE_ISSUER", public_issuer)
+    monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
+    mock_client = _make_mock_jwks_client(public_key)
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+    with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
+        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    assert r.status_code == 200
+    assert r.headers["X-Auth-Email"] == "lo@example.com"
+
+
+def test_es256_public_issuer_without_override_is_401(monkeypatch, ec_keypair):
+    """Without SUPABASE_ISSUER, a public-issuer token against a loopback
+    SUPABASE_URL fails the derived-issuer check — enforcement is retained."""
+    private_pem, public_key = ec_keypair
+    now = int(time.time())
+    token = jwt.encode(
+        {"aud": "authenticated", "iss": "https://sb-esource.getbilled.io/auth/v1",
+         "sub": "u-3", "email": "lo@example.com", "iat": now, "exp": now + 60},
+        private_pem, algorithm="ES256", headers={"kid": "test-kid"},
+    )
+    cookie_val = _wrap_token(token)
+    monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:8000")
+    monkeypatch.delenv("SUPABASE_ISSUER", raising=False)
+    monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
+    mock_client = _make_mock_jwks_client(public_key)
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+    with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
+        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+    assert r.status_code == 401
+
+
 # ---------------------------------------------------------------------------
 # ES256 / JWKS tests
 # ---------------------------------------------------------------------------

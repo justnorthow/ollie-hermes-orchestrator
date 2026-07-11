@@ -97,7 +97,15 @@ def validate(request: Request) -> Response:
     # Compute supabase_url, issuer, and project ref at the top so that cookie
     # selection is scoped to OUR project before we attempt any JWT verification.
     supabase_url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
-    issuer = f"{supabase_url}/auth/v1" if supabase_url else None
+    # Self-hosted split: on a box with a co-located Supabase stack the
+    # orchestrator reaches Kong via loopback (SUPABASE_URL=http://127.0.0.1:8000)
+    # while GoTrue mints tokens with the browser-facing public issuer
+    # (GOTRUE_JWT_ISSUER, e.g. https://sb-<host>/auth/v1). SUPABASE_ISSUER
+    # carries that expected issuer; without it the check falls back to deriving
+    # from SUPABASE_URL — correct for hosted projects, where API URL and token
+    # issuer share an origin.
+    issuer_env = os.environ.get("SUPABASE_ISSUER", "").strip().rstrip("/")
+    issuer = issuer_env or (f"{supabase_url}/auth/v1" if supabase_url else None)
     ref = _project_ref(supabase_url) if supabase_url else None
 
     access_token = _access_token_from_cookie(
