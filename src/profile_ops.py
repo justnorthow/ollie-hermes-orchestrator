@@ -106,12 +106,11 @@ def set_config(name: str, key: str, value: str) -> None:
     subprocess.run([_resolve(name), "config", "set", key, value], check=True)
 
 
-def get_default_config(key: str) -> str | None:
-    """Read a dotted-path value from the DEFAULT Hermes profile's config.yaml.
+def _read_yaml_key(config_path: Path, key: str) -> str | None:
+    """Read a dotted-path value from a Hermes config.yaml.
     Hermes itself has no `config get` subcommand (only show/set/path), so we
     parse the YAML directly. Returns None if the key is unset or the file is
     missing/unreadable."""
-    config_path = Path(os.environ.get("HOME", os.path.expanduser("~"))) / ".hermes" / "config.yaml"
     if not config_path.is_file():
         return None
     try:
@@ -129,6 +128,25 @@ def get_default_config(key: str) -> str | None:
         if node is None:
             return None
     return str(node) if node != "" else None
+
+
+def get_default_config(key: str) -> str | None:
+    """Read a dotted-path value from the DEFAULT Hermes profile's config.yaml."""
+    config_path = Path(os.environ.get("HOME", os.path.expanduser("~"))) / ".hermes" / "config.yaml"
+    return _read_yaml_key(config_path, key)
+
+
+def get_profile_model(profile_id: str, hermes_home: Path, profiles_dir: Path) -> str | None:
+    """Live model.default for an agent: the global config.yaml for the default
+    profile, the per-profile config.yaml otherwise. AGENTS_JSON's model field
+    is a display cache written only on orchestrator create/update — a model
+    changed via `hermes model set` or the Hermes dashboard bypasses it, so
+    readers must prefer this value and use the cache only as a fallback."""
+    if profile_id == "default":
+        config_path = hermes_home / "config.yaml"
+    else:
+        config_path = profiles_dir / profile_id / "config.yaml"
+    return _read_yaml_key(config_path, "model.default")
 
 
 # Model-level config keys that define which LLM the agent calls. Copied wholesale

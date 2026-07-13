@@ -10,6 +10,7 @@ from src.identity import resolve_soul_path, soul_needs_identity, write_soul
 from src.lifecycle import CreateRequest, UpdateRequest, create_agent, delete_agent, update_agent
 from src.models import Agent, CreateAgent, SetIdentityRequest, UpdateAgent
 from src.persona_polish import polish_persona
+from src.profile_ops import get_profile_model
 from src.sse import sse_event
 
 _logger = logging.getLogger(__name__)
@@ -19,12 +20,14 @@ router = APIRouter(prefix="/v1/agents", tags=["agents"], dependencies=[Depends(r
 
 def _entry_to_agent(e, cfg: Config | None = None) -> dict:
     needs_identity = False
+    model = e.model
     if cfg is not None:
         soul_path = resolve_soul_path(e.id, cfg.hermes_home, cfg.hermes_profiles_dir)
         needs_identity = soul_needs_identity(soul_path)
+        model = get_profile_model(e.id, cfg.hermes_home, cfg.hermes_profiles_dir) or model
     return Agent(
         id=e.id, displayName=e.name, color=e.color,
-        provider="anthropic", model=e.model or "unknown",
+        provider="anthropic", model=model or "unknown",
         gatewayPort=e.gateway_port, dashboardPort=e.dashboard_port,
         needsIdentity=needs_identity,
     ).model_dump()
