@@ -145,4 +145,4 @@ def test_set_env_key_value_with_backslashes_survives(tmp_path):
     env = tmp_path / ".env"
     env.write_text("INSTANCE_TITLE=Old\n")
     set_env_key(env, "INSTANCE_TITLE", r"C:\Users\weird ሴ")
-    assert r"INSTANCE_TITLE=C:\Users\weird ሴ" in env.read_text()
+    assert r"INSTANCE_TITLE=C:\Users\weird ሴ" in env.read_text(encoding="utf-8")
