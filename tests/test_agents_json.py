@@ -108,3 +108,41 @@ def test_entry_roundtrips_scope():
     assert out["scope"] == "company"
     assert out["manager_visible"] is True
     assert _json_to_entry(out).manager_visible is True
+
+
+def test_set_env_key_appends_when_absent(tmp_path):
+    from src.agents_json import set_env_key
+    env = tmp_path / ".env"
+    env.write_text("HERMES_GATEWAY_KEY=k\n")
+    set_env_key(env, "INSTANCE_TITLE", "JNOW Prod")
+    text = env.read_text()
+    assert "INSTANCE_TITLE=JNOW Prod\n" in text
+    assert text.startswith("HERMES_GATEWAY_KEY=k\n")
+
+
+def test_set_env_key_replaces_in_place_and_collapses_duplicates(tmp_path):
+    from src.agents_json import set_env_key
+    env = tmp_path / ".env"
+    env.write_text("A=1\nINSTANCE_TITLE=Old\nB=2\nINSTANCE_TITLE=Older\n")
+    set_env_key(env, "INSTANCE_TITLE", "New")
+    lines = env.read_text().splitlines()
+    assert lines.count("INSTANCE_TITLE=New") == 1
+    assert "INSTANCE_TITLE=Old" not in lines and "INSTANCE_TITLE=Older" not in lines
+    assert "A=1" in lines and "B=2" in lines
+
+
+def test_set_env_key_empty_value_keeps_key(tmp_path):
+    from src.agents_json import set_env_key
+    env = tmp_path / ".env"
+    env.write_text("INSTANCE_TITLE=Old\n")
+    set_env_key(env, "INSTANCE_TITLE", "")
+    assert "INSTANCE_TITLE=\n" in env.read_text()
+
+
+def test_set_env_key_value_with_backslashes_survives(tmp_path):
+    # Same re.sub backslash-escape trap _replace_agents_line guards against.
+    from src.agents_json import set_env_key
+    env = tmp_path / ".env"
+    env.write_text("INSTANCE_TITLE=Old\n")
+    set_env_key(env, "INSTANCE_TITLE", r"C:\Users\weird ሴ")
+    assert r"INSTANCE_TITLE=C:\Users\weird ሴ" in env.read_text()

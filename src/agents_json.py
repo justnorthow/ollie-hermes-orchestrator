@@ -58,7 +58,7 @@ def _json_to_entry(d: dict) -> AgentEntry:
 
 
 def read_agents(env_path: Path) -> list[AgentEntry]:
-    text = env_path.read_text()
+    text = env_path.read_text(encoding="utf-8")
     m = _AGENTS_LINE.search(text)
     if not m:
         return []
@@ -69,7 +69,7 @@ def _write_env_atomic(env_path: Path, new_text: str) -> None:
     dir_ = env_path.parent
     fd, tmp = tempfile.mkstemp(prefix=".env.", dir=str(dir_))
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(new_text)
         os.replace(tmp, env_path)
     except Exception:
@@ -94,7 +94,7 @@ def _replace_agents_line(env_text: str, entries: list[AgentEntry]) -> str:
 
 
 def write_agent(env_path: Path, entry: AgentEntry) -> None:
-    text = env_path.read_text()
+    text = env_path.read_text(encoding="utf-8")
     entries = read_agents(env_path)
     entries = [e for e in entries if e.id != entry.id]
     entries.append(entry)
@@ -102,6 +102,33 @@ def write_agent(env_path: Path, entry: AgentEntry) -> None:
 
 
 def remove_agent(env_path: Path, agent_id: str) -> None:
-    text = env_path.read_text()
+    text = env_path.read_text(encoding="utf-8")
     entries = [e for e in read_agents(env_path) if e.id != agent_id]
     _write_env_atomic(env_path, _replace_agents_line(text, entries))
+
+
+def set_env_key(env_path: Path, key: str, value: str) -> None:
+    """Atomically upsert one KEY=value line in a stack .env. Replaces the
+    first occurrence in place, drops any duplicates, appends when absent.
+    Replacement uses a function (not a string) for the same backslash-escape
+    reason as _replace_agents_line."""
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"{key} must be a single-line value")
+    text = env_path.read_text(encoding="utf-8")
+    line = f"{key}={value}"
+    pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
+    if pattern.search(text):
+        first_done = [False]
+
+        def _sub(m):
+            if not first_done[0]:
+                first_done[0] = True
+                return line
+            return "\x00DROP\x00"
+
+        text = pattern.sub(_sub, text)
+        text = "\n".join(l for l in text.split("\n") if l != "\x00DROP\x00")
+    else:
+        sep = "" if text.endswith("\n") or not text else "\n"
+        text = f"{text}{sep}{line}\n"
+    _write_env_atomic(env_path, text)

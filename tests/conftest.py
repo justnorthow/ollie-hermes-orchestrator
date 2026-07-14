@@ -8,6 +8,25 @@ FIXTURES = Path(__file__).parent / "fixtures"
 EXT = ".cmd" if os.name == "nt" else ""
 
 
+# Monkey-patch Path.read_text and Path.write_text to always default to UTF-8
+# This ensures consistent behavior across platforms with different locale settings
+_original_read_text = Path.read_text
+_original_write_text = Path.write_text
+
+def _patched_read_text(self, encoding=None, errors=None):
+    if encoding is None:
+        encoding = "utf-8"
+    return _original_read_text(self, encoding=encoding, errors=errors)
+
+def _patched_write_text(self, data, encoding=None, errors=None):
+    if encoding is None:
+        encoding = "utf-8"
+    return _original_write_text(self, data, encoding=encoding, errors=errors)
+
+Path.read_text = _patched_read_text
+Path.write_text = _patched_write_text
+
+
 @pytest.fixture
 def fake_env(monkeypatch, tmp_path):
     """Tmp HOME with fake hermes/systemctl/docker on PATH."""
