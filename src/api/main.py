@@ -14,6 +14,7 @@ from src.api.runs import router as runs_router
 from src.api.sessions import router as sessions_router
 from src.api.admin import router as admin_router
 from src.api.manage import router as manage_router
+from src.api.instance import router as instance_router
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ollie-orchestrator")
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(admin_router)
     app.include_router(manage_router)
+    app.include_router(instance_router)
     return app
 
 
