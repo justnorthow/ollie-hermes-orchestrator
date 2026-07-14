@@ -60,13 +60,15 @@ def test_set_title_unauthenticated_401(client):
     assert client.put("/v1/instance/title", json={"title": "x"}).status_code == 401
 
 
-def test_set_title_reports_bounce_failure_but_persists(client, fake_env, monkeypatch):
+def test_set_title_bounce_failure_swallowed_and_title_persists(client, fake_env, monkeypatch):
     import src.api.instance as instance_mod
     def boom():
         raise RuntimeError("docker down")
     monkeypatch.setattr(instance_mod, "bounce_dashboard", boom)
+    # Starlette's TestClient runs BackgroundTasks synchronously as part of
+    # the request call, so if _bounce_after_write let the exception escape,
+    # this call itself would raise. It must not.
     r = client.put("/v1/instance/title", json={"title": "Durable"}, headers=_auth())
     assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is False and "bounce" in body["error"]
+    assert r.json() == {"ok": True}
     assert "INSTANCE_TITLE=Durable\n" in _env_text(fake_env)
