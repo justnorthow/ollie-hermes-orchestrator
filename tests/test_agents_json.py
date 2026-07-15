@@ -146,3 +146,28 @@ def test_set_env_key_value_with_backslashes_survives(tmp_path):
     env.write_text("INSTANCE_TITLE=Old\n")
     set_env_key(env, "INSTANCE_TITLE", r"C:\Users\weird ሴ")
     assert r"INSTANCE_TITLE=C:\Users\weird ሴ" in env.read_text(encoding="utf-8")
+
+
+def test_subtitle_round_trips():
+    from src.agents_json import AgentEntry, _entry_to_json, _json_to_entry
+    e = AgentEntry(id="olivia", name="Olivia", gateway_port=9200, dashboard_port=9201,
+                   color="#e879f9", subtitle="AI Head of Marketing")
+    d = _entry_to_json(e)
+    assert d["subtitle"] == "AI Head of Marketing"
+    assert _json_to_entry(d).subtitle == "AI Head of Marketing"
+
+
+def test_subtitle_absent_stays_absent():
+    from src.agents_json import AgentEntry, _entry_to_json, _json_to_entry
+    e = AgentEntry(id="ollie", name="Ollie", gateway_port=9100, dashboard_port=9101,
+                   color="#a78bfa")
+    d = _entry_to_json(e)
+    assert "subtitle" not in d          # back-compat: no key emitted when unset
+    assert _json_to_entry(d).subtitle is None
+
+
+def test_legacy_json_without_subtitle_parses():
+    from src.agents_json import _json_to_entry
+    d = {"id": "x", "name": "X", "gatewayUrl": "http://host.docker.internal:9100",
+         "dashboardUrl": "http://host.docker.internal:9101", "color": "#888888"}
+    assert _json_to_entry(d).subtitle is None
