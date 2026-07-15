@@ -42,6 +42,7 @@ class CreateRequest:
     # "inherit" skips them so Hermes uses whatever auth the host has already
     # configured (Codex OAuth, Claude Code CLI, ambient env vars).
     auth_method: str = "api_key"
+    subtitle: Optional[str] = None
 
 
 def _pick_color(existing_colors: list[str]) -> str:
@@ -142,6 +143,7 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
                 dashboard_port=ports.dashboard,
                 color=color,
                 model=displayed_model,
+                subtitle=(req.subtitle.strip() or None) if req.subtitle is not None else None,
             )
             write_agent(env_path, entry)
             yield _ev("update_agents_json")
@@ -222,6 +224,7 @@ class UpdateRequest:
     systemPrompt: Optional[str] = None
     enabledSkills: Optional[list[str]] = None
     apiKey: Optional[str] = None
+    subtitle: Optional[str] = None
     restart: bool = True
 
 
@@ -307,6 +310,10 @@ async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
             )
 
         # Apply AGENTS_JSON changes
+        if req.subtitle is not None:
+            new_subtitle = req.subtitle.strip() or None   # "" clears
+        else:
+            new_subtitle = entry.subtitle                  # untouched
         new_entry = AgentEntry(
             id=entry.id,
             name=req.displayName if req.displayName is not None else entry.name,
@@ -314,6 +321,7 @@ async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
             dashboard_port=entry.dashboard_port,
             color=req.color if req.color is not None else entry.color,
             model=req.model if req.model is not None else entry.model,
+            subtitle=new_subtitle,
         )
         write_agent(env_path, new_entry)
 

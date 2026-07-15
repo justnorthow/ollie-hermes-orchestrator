@@ -109,3 +109,97 @@ def test_model_falls_back_to_agents_json_when_no_profile_config(client, fake_env
     assert r.status_code == 200
     agents = {a["id"]: a for a in r.json()["agents"]}
     assert agents["ghost"]["model"] == "cached-model"
+
+
+def test_list_agents_includes_subtitle(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+        "subtitle": "AI Head of Marketing",
+    }])
+    resp = client.get("/v1/agents", headers=_auth())
+    assert resp.status_code == 200
+    agent = next(a for a in resp.json()["agents"] if a["id"] == "olivia")
+    assert agent["subtitle"] == "AI Head of Marketing"
+
+
+def test_list_agents_subtitle_null_when_unset(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+    }])
+    resp = client.get("/v1/agents", headers=_auth())
+    assert resp.status_code == 200
+    agent = next(a for a in resp.json()["agents"] if a["id"] == "olivia")
+    assert agent["subtitle"] is None
+
+
+def test_update_subtitle_persists(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+    }])
+    r = client.patch("/v1/agents/olivia", json={"subtitle": "Chief of Staff"}, headers=_auth())
+    assert r.status_code == 200
+    assert r.json()["subtitle"] == "Chief of Staff"
+    from src.agents_json import read_agents
+    entries = read_agents(fake_env["stack"] / ".env")
+    entry = next(e for e in entries if e.id == "olivia")
+    assert entry.subtitle == "Chief of Staff"
+
+
+def test_update_subtitle_empty_string_clears(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+        "subtitle": "AI Head of Marketing",
+    }])
+    r = client.patch("/v1/agents/olivia", json={"subtitle": ""}, headers=_auth())
+    assert r.status_code == 200
+    assert r.json()["subtitle"] is None
+    from src.agents_json import read_agents
+    entries = read_agents(fake_env["stack"] / ".env")
+    entry = next(e for e in entries if e.id == "olivia")
+    assert entry.subtitle is None
+    r2 = client.get("/v1/agents", headers=_auth())
+    agent = next(a for a in r2.json()["agents"] if a["id"] == "olivia")
+    assert agent["subtitle"] is None
+
+
+def test_subtitle_too_long_rejected(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+    }])
+    r = client.patch("/v1/agents/olivia", json={"subtitle": "x" * 65}, headers=_auth())
+    assert r.status_code == 422
+
+
+def test_update_other_field_does_not_wipe_subtitle(client, fake_env):
+    # Task 1 review carry-over: update_agent's entry-rebuild must forward
+    # entry.subtitle when the request doesn't touch it, or ANY update
+    # silently wipes an existing subtitle.
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+        "subtitle": "AI Head of Marketing",
+    }])
+    r = client.patch("/v1/agents/olivia", json={"color": "#111111"}, headers=_auth())
+    assert r.status_code == 200
+    assert r.json()["subtitle"] == "AI Head of Marketing"
+    from src.agents_json import read_agents
+    entries = read_agents(fake_env["stack"] / ".env")
+    entry = next(e for e in entries if e.id == "olivia")
+    assert entry.subtitle == "AI Head of Marketing"
