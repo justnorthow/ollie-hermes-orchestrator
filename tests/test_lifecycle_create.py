@@ -109,6 +109,53 @@ async def test_create_agent_inherit_copies_model_config_from_default(fake_env):
 
 
 @pytest.mark.asyncio
+async def test_create_agent_subtitle_stripped_into_agents_json(fake_env):
+    req = CreateRequest(
+        name="olivia",
+        display_name="Olivia",
+        color="#7c3aed",
+        provider="anthropic",
+        model="claude-sonnet-4.6",
+        api_key="sk-x",
+        system_prompt=None,
+        enabled_skills=[],
+        api_server_key="shared",
+        subtitle="  AI Head of Marketing  ",
+    )
+    events = [ev async for ev in create_agent(req)]
+    final = events[-1]
+    assert final.get("event") == "done"
+    # SSE done-event carries the normalized subtitle too (same contract as GET)
+    assert final["agent"]["subtitle"] == "AI Head of Marketing"
+    from src.agents_json import read_agents
+    entry = next(e for e in read_agents(fake_env["stack"] / ".env") if e.id == "olivia")
+    assert entry.subtitle == "AI Head of Marketing"
+
+
+@pytest.mark.asyncio
+async def test_create_agent_without_subtitle_stores_none(fake_env):
+    req = CreateRequest(
+        name="paige",
+        display_name="Paige",
+        color="#aabbcc",
+        provider="anthropic",
+        model="claude-sonnet-4.6",
+        api_key="sk-x",
+        system_prompt=None,
+        enabled_skills=[],
+        api_server_key="shared",
+        subtitle=None,
+    )
+    events = [ev async for ev in create_agent(req)]
+    final = events[-1]
+    assert final.get("event") == "done"
+    assert final["agent"]["subtitle"] is None
+    from src.agents_json import read_agents
+    entry = next(e for e in read_agents(fake_env["stack"] / ".env") if e.id == "paige")
+    assert entry.subtitle is None
+
+
+@pytest.mark.asyncio
 async def test_create_agent_rejects_duplicate_name(fake_env):
     base = dict(
         display_name="X", color=None, provider="anthropic", model="m",

@@ -169,6 +169,7 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
                 dashboardPort=ports.dashboard,
                 systemPrompt=req.system_prompt,
                 enabledSkills=req.enabled_skills,
+                subtitle=(req.subtitle.strip() or None) if req.subtitle is not None else None,
             )
             yield {"event": "done", "agent": agent.model_dump(),
                    "duration_ms": int((time.monotonic() - started) * 1000)}
