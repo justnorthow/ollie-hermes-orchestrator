@@ -40,6 +40,29 @@ def _project_ref(supabase_url: str) -> str | None:
     return m.group(1) if m else None
 
 
+_HOST_LABEL_RE = re.compile(r"^https?://([a-z0-9-]+)\.[a-z0-9.:-]+", re.IGNORECASE)
+
+
+def _cookie_ref(supabase_url: str, issuer: str | None = None) -> str | None:
+    """Derive the @supabase/ssr cookie ref (cookie name = ``sb-<ref>-auth-token``).
+
+    supabase-js names the session cookie after the FIRST HOST LABEL of the
+    browser-facing URL: the project ref on hosted ``*.supabase.co``, the
+    subdomain label on custom domains (https://sb-ollie.jnow.io → "sb-ollie").
+    On split self-hosted boxes SUPABASE_URL may be loopback (Kong) while the
+    browser-facing origin lives in SUPABASE_ISSUER — so prefer the issuer host
+    when it parses. IP/loopback hosts yield no meaningful label → None, which
+    routes callers to the per-candidate fallback.
+    """
+    for candidate in (issuer, supabase_url):
+        if not candidate:
+            continue
+        m = _HOST_LABEL_RE.match(candidate.strip())
+        if m and not m.group(1).isdigit():
+            return m.group(1)
+    return None
+
+
 def _reassemble_supabase_cookie(cookies: dict[str, str], ref: str | None = None) -> str | None:
     """Rebuild the @supabase/ssr session cookie value (single or chunked .0/.1/…).
 
@@ -51,6 +74,21 @@ def _reassemble_supabase_cookie(cookies: dict[str, str], ref: str | None = None)
     If *ref* is None (pure-HS256 installs or custom-domain deployments without a
     recognisable supabase.co host), the original any-match behaviour is preserved.
     """
+    candidates = _candidate_cookie_values(cookies, ref)
+    return candidates[0] if candidates else None
+
+
+def _candidate_cookie_values(cookies: dict[str, str], ref: str | None = None) -> list[str]:
+    """Session-cookie candidates — one per BASE cookie name, chunks joined in order.
+
+    With ``Domain=.jnow.io`` every sibling box's session cookie arrives on the
+    same request (e.g. ``sb-sb-ollie-…`` AND ``sb-sb-olliesandbox-…``). Chunk
+    sets from different base names must NEVER be mixed: sorting all chunk names
+    by numeric suffix alone interleaves two cookies' halves into one garbage
+    value (the multi-box 401 bug). When *ref* is known only its cookie is
+    considered; otherwise each coherent per-base candidate is returned and the
+    caller tries them in turn.
+    """
     if ref:
         prefix = f"sb-{ref}-auth-token"
         relevant = {
@@ -59,16 +97,20 @@ def _reassemble_supabase_cookie(cookies: dict[str, str], ref: str | None = None)
         }
     else:
         relevant = {n: v for n, v in cookies.items() if _AUTH_TOKEN_RE.search(n)}
-    if not relevant:
-        return None
-    chunk_names = sorted(
-        (n for n in relevant if _CHUNK_SUFFIX_RE.search(n)),
-        key=lambda n: int(_CHUNK_SUFFIX_RE.search(n).group(1)),
-    )
-    if chunk_names:
-        return "".join(relevant[n] for n in chunk_names)
-    base_names = [n for n in relevant if not _CHUNK_SUFFIX_RE.search(n)]
-    return relevant[base_names[0]] if base_names else None
+    by_base: dict[str, dict[int | None, str]] = {}
+    for n, v in relevant.items():
+        m = _CHUNK_SUFFIX_RE.search(n)
+        base = n[: m.start()] if m else n
+        by_base.setdefault(base, {})[int(m.group(1)) if m else None] = v
+    candidates: list[str] = []
+    for base in sorted(by_base):
+        parts = by_base[base]
+        chunk_keys = sorted(k for k in parts if k is not None)
+        if chunk_keys:
+            candidates.append("".join(parts[k] for k in chunk_keys))
+        elif None in parts:
+            candidates.append(parts[None])
+    return candidates
 
 
 def _access_token_from_cookie(raw: str | None) -> str | None:
@@ -106,14 +148,49 @@ def validate(request: Request) -> Response:
     # issuer share an origin.
     issuer_env = os.environ.get("SUPABASE_ISSUER", "").strip().rstrip("/")
     issuer = issuer_env or (f"{supabase_url}/auth/v1" if supabase_url else None)
-    ref = _project_ref(supabase_url) if supabase_url else None
+    # Cookie ref derives from the BROWSER-FACING origin: issuer first (split
+    # self-hosted boxes point SUPABASE_URL at loopback Kong), then SUPABASE_URL
+    # (hosted projects and public custom domains).
+    ref = _cookie_ref(supabase_url, issuer_env or None)
 
-    access_token = _access_token_from_cookie(
-        _reassemble_supabase_cookie(dict(request.cookies), ref)
-    )
-    if not access_token:
+    # One candidate per base cookie name — sibling boxes' cookies coexist on
+    # this origin (Domain=.jnow.io), so try each coherent candidate in turn.
+    tokens = [
+        t for t in (
+            _access_token_from_cookie(c)
+            for c in _candidate_cookie_values(dict(request.cookies), ref)
+        ) if t
+    ]
+    if not tokens:
         return Response(status_code=401)
 
+    claims: dict | None = None
+    last_error: Response = Response(status_code=401)
+    for access_token in tokens:
+        result = _verify_token(access_token, issuer)
+        if isinstance(result, dict):
+            claims = result
+            break
+        # A 5xx (JWKS unreachable / not configured) is more informative than a
+        # generic 401 from a sibling box's token — keep the strongest error.
+        if result.status_code != 401 or last_error.status_code == 401:
+            last_error = result
+    if claims is None:
+        return last_error
+
+    email = claims.get("email")
+    if not email:
+        return Response(status_code=401)
+    role = claims.get("user_role") or "agent"
+    headers = {"X-Auth-Email": email, "X-Auth-Role": role}
+    user_id = claims.get("sub")
+    if isinstance(user_id, str) and user_id:
+        headers["X-Auth-User-Id"] = user_id
+    return Response(status_code=200, headers=headers)
+
+
+def _verify_token(access_token: str, issuer: str | None) -> dict | Response:
+    """Verify one access token; return its claims dict or the error Response."""
     # Read the algorithm from the unverified header ONLY to select the right
     # verification key — each branch verifies with its own key type.
     # An unknown or missing alg is rejected immediately (includes "none").
@@ -181,12 +258,4 @@ def validate(request: Request) -> Response:
         # Unknown or disallowed algorithm (including "none", "RS256") → reject.
         return Response(status_code=401)
 
-    email = claims.get("email")
-    if not email:
-        return Response(status_code=401)
-    role = claims.get("user_role") or "agent"
-    headers = {"X-Auth-Email": email, "X-Auth-Role": role}
-    user_id = claims.get("sub")
-    if isinstance(user_id, str) and user_id:
-        headers["X-Auth-User-Id"] = user_id
-    return Response(status_code=200, headers=headers)
+    return claims

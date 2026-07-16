@@ -187,7 +187,11 @@ def test_es256_issuer_override_env(monkeypatch, ec_keypair):
     app.include_router(auth_validate_router)
     app.dependency_overrides[require_bearer] = lambda: None
     with patch("src.api.auth_validate._get_jwks_client", return_value=mock_client):
-        r = TestClient(app).get("/v1/auth/validate", cookies={"sb-x-auth-token": cookie_val})
+        # Cookie name matches @supabase/ssr's real derivation: first host label
+        # of the browser-facing URL ("sb-esource") -> sb-sb-esource-auth-token.
+        # Ref scoping now requires the real name (multi-box cookie coexistence).
+        r = TestClient(app).get("/v1/auth/validate",
+                                cookies={"sb-sb-esource-auth-token": cookie_val})
     assert r.status_code == 200
     assert r.headers["X-Auth-Email"] == "lo@example.com"
 
@@ -602,3 +606,100 @@ def test_only_foreign_project_cookie_present_is_401(monkeypatch):
         cookies={"sb-zzznewsletter-auth-token": foreign_cookie_val},
     )
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Multi-box cookie coexistence (Domain=.jnow.io ships every box's cookie to
+# every sibling host). Regression tests for the chunk-interleave bug: two
+# chunked sb-*-auth-token cookie sets on one request must never be
+# concatenated into one garbage value.
+# ---------------------------------------------------------------------------
+
+def _split_chunks(value: str, n: int = 2) -> list[str]:
+    """Split a cookie value into n roughly-equal chunks (@supabase/ssr style)."""
+    size = -(-len(value) // n)
+    return [value[i * size:(i + 1) * size] for i in range(n)]
+
+
+def test_custom_domain_ref_scopes_to_our_cookie(monkeypatch):
+    """Self-hosted custom domain: ref derives from the public host's first label,
+    so a sibling box's chunked cookie on the same request is ignored."""
+    public_url = "https://sb-ollie.jnow.io"
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+    monkeypatch.setenv("SUPABASE_URL", public_url)
+    monkeypatch.delenv("SUPABASE_ISSUER", raising=False)
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+    c = TestClient(app)
+
+    ours = _make_cookie_value(email="jb@jnow.io", issuer=f"{public_url}/auth/v1")
+    ours_chunks = _split_chunks(ours)
+    foreign = _make_cookie_value(email="jb@jnow.io", secret="other-secret-32-bytes-long!!!!!!",
+                                 issuer="https://sb-olliesandbox.jnow.io/auth/v1")
+    foreign_chunks = _split_chunks(foreign)
+
+    cookies = {
+        # Foreign box's cookie sorts FIRST alphabetically at equal chunk index —
+        # the interleave bug concatenates across both sets and breaks parsing.
+        "sb-sb-a-sandbox-auth-token.0": foreign_chunks[0],
+        "sb-sb-a-sandbox-auth-token.1": foreign_chunks[1],
+        "sb-sb-ollie-auth-token.0": ours_chunks[0],
+        "sb-sb-ollie-auth-token.1": ours_chunks[1],
+    }
+    r = c.get("/v1/auth/validate", cookies=cookies)
+    assert r.status_code == 200
+    assert r.headers["X-Auth-Email"] == "jb@jnow.io"
+
+
+def test_loopback_url_derives_ref_from_issuer(monkeypatch):
+    """Self-hosted split: SUPABASE_URL is loopback (Kong), SUPABASE_ISSUER carries
+    the browser-facing origin — the cookie ref must derive from the ISSUER host."""
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+    monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("SUPABASE_ISSUER", "https://sb-ollie.jnow.io/auth/v1")
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+    c = TestClient(app)
+
+    ours = _make_cookie_value(email="jb@jnow.io", issuer="https://sb-ollie.jnow.io/auth/v1")
+    ours_chunks = _split_chunks(ours)
+    junk = _make_cookie_value(secret="other-secret-32-bytes-long!!!!!!",
+                              issuer="https://sb-other.jnow.io/auth/v1")
+    junk_chunks = _split_chunks(junk)
+    cookies = {
+        "sb-sb-a-other-auth-token.0": junk_chunks[0],
+        "sb-sb-a-other-auth-token.1": junk_chunks[1],
+        "sb-sb-ollie-auth-token.0": ours_chunks[0],
+        "sb-sb-ollie-auth-token.1": ours_chunks[1],
+    }
+    r = c.get("/v1/auth/validate", cookies=cookies)
+    assert r.status_code == 200
+    assert r.headers["X-Auth-Email"] == "jb@jnow.io"
+
+
+def test_no_ref_fallback_never_interleaves_chunk_sets(monkeypatch):
+    """No derivable ref at all: the fallback must group chunks per base cookie
+    name and try each coherent candidate — never mix chunk sets."""
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ISSUER", raising=False)
+    app = FastAPI()
+    app.include_router(auth_validate_router)
+    app.dependency_overrides[require_bearer] = lambda: None
+    c = TestClient(app)
+
+    ours = _make_cookie_value(email="jb@jnow.io", issuer=None)
+    ours_chunks = _split_chunks(ours)
+    junk = _make_cookie_value(secret="other-secret-32-bytes-long!!!!!!", issuer=None)
+    junk_chunks = _split_chunks(junk)
+    cookies = {
+        "sb-aaaa-auth-token.0": junk_chunks[0],
+        "sb-aaaa-auth-token.1": junk_chunks[1],
+        "sb-zzzz-auth-token.0": ours_chunks[0],
+        "sb-zzzz-auth-token.1": ours_chunks[1],
+    }
+    r = c.get("/v1/auth/validate", cookies=cookies)
+    assert r.status_code == 200
+    assert r.headers["X-Auth-Email"] == "jb@jnow.io"
