@@ -51,3 +51,28 @@ async def test_delete_refuses_default(fake_env):
     result = await delete_agent("default")
     assert result["ok"] is False
     assert "reserved" in result["error"].lower() or "default" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_does_not_bounce_dashboard_inline(fake_env, monkeypatch):
+    """The dashboard bounce must NOT happen inside delete_agent: the container
+    houses the nginx proxying the DELETE itself, so an inline bounce severs the
+    in-flight response and the browser sees a 502 for a delete that succeeded
+    (sandbox 'pam', 2026-07-17). The API layer defers it via BackgroundTasks —
+    delete_agent just reports bounce_needed."""
+    import src.lifecycle as lifecycle_mod
+    await _create("paige")
+    calls: list[str] = []
+    monkeypatch.setattr(lifecycle_mod, "bounce_dashboard", lambda: calls.append("bounce"))
+    result = await delete_agent("paige")
+    assert result["ok"] is True
+    assert result.get("bounce_needed") is True
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_delete_already_gone_needs_no_bounce(fake_env):
+    """Nothing changed on an already-gone delete — no reason to bounce."""
+    result = await delete_agent("ghost")
+    assert result["ok"] is True
+    assert result.get("bounce_needed") is not True

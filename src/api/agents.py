@@ -1,11 +1,12 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from src.agents_json import read_agents
 from src.api import authz
 from src.auth import require_bearer
 from src.audit import audit
 from src.config import Config
+from src.docker_ops import bounce_dashboard
 from src.identity import resolve_soul_path, soul_needs_identity, write_soul
 from src.lifecycle import CreateRequest, UpdateRequest, create_agent, delete_agent, update_agent
 from src.models import Agent, CreateAgent, SetIdentityRequest, UpdateAgent
@@ -94,8 +95,23 @@ async def create(body: CreateAgent, request: Request) -> StreamingResponse:
     return StreamingResponse(stream(), media_type="text/event-stream", status_code=202)
 
 
+def _bounce_after_delete(cfg, actor_ip: str, agent_id: str) -> None:
+    """Runs as a BackgroundTask after the DELETE's 204 has been sent, so
+    bouncing the dashboard container (which houses the nginx that proxied
+    this very request) can't sever the in-flight response — the browser saw
+    a 502 for a successful delete when the bounce was inline (sandbox 'pam',
+    2026-07-17). Mirrors instance.py's _bounce_after_write. Must never raise:
+    a raising background task poisons the request in tests and logs."""
+    try:
+        bounce_dashboard()
+    except Exception as e:
+        _logger.warning("delete: deferred dashboard bounce failed", exc_info=True)
+        audit(cfg.audit_log_path, op="delete", agent_id=agent_id, actor_ip=actor_ip,
+              result="error", duration_ms=0, error=f"deferred bounce failed: {e}")
+
+
 @router.delete("/{agent_id}", status_code=204)
-async def delete(agent_id: str, request: Request):
+async def delete(agent_id: str, request: Request, background_tasks: BackgroundTasks):
     denied = authz.admin_denied(request)
     if denied:
         return denied
@@ -108,6 +124,8 @@ async def delete(agent_id: str, request: Request):
     if not result["ok"]:
         raise HTTPException(status_code=404 if result.get("error") == "not_found" else 400,
                             detail=result.get("error"))
+    if result.get("bounce_needed"):
+        background_tasks.add_task(_bounce_after_delete, cfg, actor_ip, agent_id)
     return None
 
 

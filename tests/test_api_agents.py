@@ -56,6 +56,50 @@ def test_unauthenticated_returns_401(client):
     assert client.get("/v1/agents").status_code == 401
 
 
+def _create_tmp_agent(client):
+    body = {"name": "tmp", "provider": "anthropic", "model": "m",
+            "apiKey": "k", "enabledSkills": []}
+    r = client.post("/v1/agents", json=body, headers=_auth())
+    list(r.iter_lines())  # drain the SSE stream so the create completes
+
+
+def test_delete_schedules_deferred_dashboard_bounce(client, monkeypatch):
+    """The bounce runs as a BackgroundTask after the 204 is sent (mirrors
+    instance.py's deferred _bounce_after_write) — TestClient executes
+    background tasks as part of the request cycle, so a scheduled bounce is
+    observable as exactly one call alongside the 204."""
+    import src.api.agents as agents_mod
+    calls: list[str] = []
+    monkeypatch.setattr(agents_mod, "bounce_dashboard", lambda: calls.append("bounce"))
+    _create_tmp_agent(client)
+    r = client.delete("/v1/agents/tmp", headers=_auth())
+    assert r.status_code == 204
+    assert calls == ["bounce"]
+
+
+def test_delete_already_gone_does_not_bounce(client, monkeypatch):
+    import src.api.agents as agents_mod
+    calls: list[str] = []
+    monkeypatch.setattr(agents_mod, "bounce_dashboard", lambda: calls.append("bounce"))
+    r = client.delete("/v1/agents/never-existed", headers=_auth())
+    assert r.status_code == 204
+    assert calls == []
+
+
+def test_delete_bounce_failure_does_not_break_the_204(client, monkeypatch):
+    """A failing deferred bounce must never surface to the caller — the delete
+    itself succeeded; the operator can re-bounce manually."""
+    import src.api.agents as agents_mod
+
+    def boom():
+        raise RuntimeError("docker down")
+
+    monkeypatch.setattr(agents_mod, "bounce_dashboard", boom)
+    _create_tmp_agent(client)
+    r = client.delete("/v1/agents/tmp", headers=_auth())
+    assert r.status_code == 204
+
+
 def _seed_agents_json(stack, entries):
     (stack / ".env").write_text(
         "HERMES_GATEWAY_KEY=k\n"

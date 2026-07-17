@@ -262,11 +262,14 @@ async def delete_agent(agent_id: str) -> dict:
             remove_agent(env_path, agent_id)
         except Exception:
             _logger.warning("delete: AGENTS_JSON failed", exc_info=True)
-        try:
-            bounce_dashboard()
-        except Exception:
-            _logger.warning("delete: dashboard bounce failed", exc_info=True)
-        return {"ok": True}
+        # The dashboard bounce is deliberately NOT done here: the dashboard
+        # container houses the nginx that proxied this very DELETE, so an
+        # inline bounce severs the in-flight response and the browser sees a
+        # 502 for a delete that actually succeeded (sandbox 'pam',
+        # 2026-07-17). The API layer schedules the bounce via BackgroundTasks
+        # after the 204 is sent — same trap and same fix as instance.py's
+        # set_title and create_agent's post-"done" bounce above.
+        return {"ok": True, "bounce_needed": True}
 
 
 async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
