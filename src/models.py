@@ -79,6 +79,7 @@ class Agent(BaseModel):
     needsIdentity: bool = False
     subtitle: Optional[str] = None
     avatar_url: Optional[str] = None
+    scope: Optional[str] = None
 
 
 class SetIdentityRequest(BaseModel):

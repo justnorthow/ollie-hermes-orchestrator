@@ -35,6 +35,7 @@ def _entry_to_agent(e, cfg: Config | None = None) -> dict:
         provider="anthropic", model=model or "unknown",
         gatewayPort=e.gateway_port, dashboardPort=e.dashboard_port,
         needsIdentity=needs_identity, subtitle=e.subtitle, avatar_url=e.avatar_url,
+        scope=e.scope,
     ).model_dump()
 
 

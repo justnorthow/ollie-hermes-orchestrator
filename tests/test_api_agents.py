@@ -273,3 +273,30 @@ def test_patch_sets_and_clears_avatar_url(client, fake_env):
     entries = read_agents(fake_env["stack"] / ".env")
     entry = next(e for e in entries if e.id == "olivia")
     assert entry.avatar_url is None
+
+
+def test_list_agents_includes_scope(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+        "scope": "user",
+    }])
+    resp = client.get("/v1/agents", headers=_auth())
+    assert resp.status_code == 200
+    agent = next(a for a in resp.json()["agents"] if a["id"] == "olivia")
+    assert agent["scope"] == "user"
+
+
+def test_get_agent_includes_scope(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+        "scope": "company",
+    }])
+    resp = client.get("/v1/agents/olivia", headers=_auth())
+    assert resp.status_code == 200
+    assert resp.json()["scope"] == "company"
