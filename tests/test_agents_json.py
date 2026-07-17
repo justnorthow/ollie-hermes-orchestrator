@@ -171,3 +171,28 @@ def test_legacy_json_without_subtitle_parses():
     d = {"id": "x", "name": "X", "gatewayUrl": "http://host.docker.internal:9100",
          "dashboardUrl": "http://host.docker.internal:9101", "color": "#888888"}
     assert _json_to_entry(d).subtitle is None
+
+
+def test_avatar_url_round_trips():
+    from src.agents_json import AgentEntry, _entry_to_json, _json_to_entry
+    e = AgentEntry(id="ollie", name="Ollie", gateway_port=9100, dashboard_port=9101,
+                   color="#a78bfa", avatar_url="https://x/shared/ollie.jpg?t=1")
+    d = _entry_to_json(e)
+    assert d["avatar_url"] == "https://x/shared/ollie.jpg?t=1"
+    assert _json_to_entry(d).avatar_url == "https://x/shared/ollie.jpg?t=1"
+
+
+def test_avatar_url_absent_stays_absent():
+    from src.agents_json import AgentEntry, _entry_to_json, _json_to_entry
+    e = AgentEntry(id="ollie", name="Ollie", gateway_port=9100, dashboard_port=9101,
+                   color="#a78bfa")
+    d = _entry_to_json(e)
+    assert "avatar_url" not in d
+    assert _json_to_entry(d).avatar_url is None
+
+
+def test_legacy_json_without_avatar_url_parses():
+    from src.agents_json import _json_to_entry
+    d = {"id": "x", "name": "X", "gatewayUrl": "http://host.docker.internal:9100",
+         "dashboardUrl": "http://host.docker.internal:9101", "color": "#888888"}
+    assert _json_to_entry(d).avatar_url is None
