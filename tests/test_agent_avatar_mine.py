@@ -43,13 +43,11 @@ def test_post_avatar_mine_uploads_and_upserts_override(ctx):
     assert r.status_code == 200
     assert len(post_calls) == 2
 
-    storage_call = post_calls[0]
-    assert storage_call["url"].endswith("/storage/v1/object/agent-avatars/u1/ollie.jpg")
+    storage_call = next(call for call in post_calls if call["url"].endswith("agent-avatars/u1/ollie.jpg"))
     assert storage_call["headers"]["x-upsert"] == "true"
     assert storage_call["content"] == b"\xff\xd8jpeg"
 
-    upsert_call = post_calls[1]
-    assert upsert_call["url"].endswith("/rest/v1/agent_avatar_overrides")
+    upsert_call = next(call for call in post_calls if call["url"].endswith("/rest/v1/agent_avatar_overrides"))
     assert upsert_call["json"]["user_id"] == "u1"
     assert upsert_call["json"]["agent_id"] == "ollie"
     assert "avatar_url" in upsert_call["json"]
@@ -78,8 +76,8 @@ def test_delete_avatar_mine_removes_override_row(ctx):
     c, monkeypatch = ctx
     delete_calls = []
 
-    def fake_delete(url, headers=None, timeout=None):
-        delete_calls.append(dict(url=url, headers=headers))
+    def fake_delete(url, params=None, headers=None, timeout=None):
+        delete_calls.append(dict(url=url, params=params, headers=headers))
         return _Resp()
 
     monkeypatch.setattr(agents_mod.httpx, "delete", fake_delete)
@@ -88,16 +86,31 @@ def test_delete_avatar_mine_removes_override_row(ctx):
     assert r.json() == {"ok": True}
 
     row_call = next(call for call in delete_calls if "/rest/v1/agent_avatar_overrides" in call["url"])
-    assert "user_id=eq.u1" in row_call["url"]
-    assert "agent_id=eq.ollie" in row_call["url"]
+    assert row_call["params"]["user_id"] == "eq.u1"
+    assert row_call["params"]["agent_id"] == "eq.ollie"
+
+
+def test_delete_avatar_mine_rejects_malformed_agent_id(ctx):
+    c, monkeypatch = ctx
+    delete_calls = []
+
+    def fake_delete(url, params=None, headers=None, timeout=None):
+        delete_calls.append(dict(url=url, params=params, headers=headers))
+        return _Resp()
+
+    monkeypatch.setattr(agents_mod.httpx, "delete", fake_delete)
+    # "AB" fails _NAME_RE (uppercase, too short) and never reaches Supabase.
+    r = c.delete("/v1/agents/AB/avatar/mine", headers={"X-Auth-User-Id": "u1"})
+    assert r.status_code == 404
+    assert delete_calls == []
 
 
 def test_get_avatars_mine_returns_override_map(ctx):
     c, monkeypatch = ctx
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None):
         assert "/rest/v1/agent_avatar_overrides" in url
-        assert "user_id=eq.u1" in url
+        assert params["user_id"] == "eq.u1"
 
         class _R:
             status_code = 200

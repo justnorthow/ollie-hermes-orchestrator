@@ -14,7 +14,7 @@ from src.config import Config
 from src.docker_ops import bounce_dashboard
 from src.identity import resolve_soul_path, soul_needs_identity, write_soul
 from src.lifecycle import CreateRequest, UpdateRequest, create_agent, delete_agent, update_agent
-from src.models import Agent, CreateAgent, SetIdentityRequest, UpdateAgent
+from src.models import _NAME_RE, Agent, CreateAgent, SetIdentityRequest, UpdateAgent
 from src.persona_polish import polish_persona
 from src.profile_ops import get_profile_model
 from src.sse import sse_event
@@ -62,7 +62,8 @@ async def get_my_avatar_overrides(request: Request) -> dict:
         return {"overrides": {}}
     sb_url, key = creds
     resp = httpx.get(
-        f"{sb_url}/rest/v1/agent_avatar_overrides?user_id=eq.{user_id}&select=agent_id,avatar_url",
+        f"{sb_url}/rest/v1/agent_avatar_overrides",
+        params={"user_id": f"eq.{user_id}", "select": "agent_id,avatar_url"},
         headers={"apikey": key, "Authorization": f"Bearer {key}"},
         timeout=10.0,
     )
@@ -267,6 +268,8 @@ async def upload_my_avatar(agent_id: str, request: Request) -> dict:
     keyed by the caller's own user_id and only ever affects the caller's own
     rendering, so it's self-scoped and harmless regardless of target agent."""
     user_id = _trusted_user_id(request)
+    if not _NAME_RE.match(agent_id):
+        raise HTTPException(status_code=404, detail="agent not found")
     cfg = request.app.state.config
     entries = read_agents(cfg.hermes_stack_dir / ".env")
     if not any(e.id == agent_id for e in entries):
@@ -310,6 +313,8 @@ async def delete_my_avatar(agent_id: str, request: Request) -> dict:
     so no existence/reachability gate is needed (mirrors upload_my_avatar's
     reasoning above)."""
     user_id = _trusted_user_id(request)
+    if not _NAME_RE.match(agent_id):
+        raise HTTPException(status_code=404, detail="agent not found")
     creds = _supabase_creds()
     if not creds:
         raise HTTPException(status_code=503, detail="supabase not configured")
@@ -317,7 +322,8 @@ async def delete_my_avatar(agent_id: str, request: Request) -> dict:
     headers = {"apikey": key, "Authorization": f"Bearer {key}", "Prefer": "return=minimal"}
     try:
         resp = httpx.delete(
-            f"{sb_url}/rest/v1/agent_avatar_overrides?user_id=eq.{user_id}&agent_id=eq.{agent_id}",
+            f"{sb_url}/rest/v1/agent_avatar_overrides",
+            params={"user_id": f"eq.{user_id}", "agent_id": f"eq.{agent_id}"},
             headers=headers,
             timeout=10.0,
         )
