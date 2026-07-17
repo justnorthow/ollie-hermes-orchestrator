@@ -79,3 +79,22 @@ async def test_update_apikey_preserves_server_key_and_provider(fake_env):
     assert "API_SERVER_KEY=shared" not in text
     assert "OPENAI_API_KEY=new-key" in text
     assert "ANTHROPIC_API_KEY" not in text
+
+
+@pytest.mark.asyncio
+async def test_update_agent_clears_avatar_on_empty(fake_env):
+    base = CreateRequest(
+        name="paige", display_name="Paige", color="#abc", provider="anthropic",
+        model="m", api_key="k", system_prompt=None, enabled_skills=[],
+        api_server_key="shared",
+    )
+    [ev async for ev in create_agent(base)]
+
+    await update_agent("paige", UpdateRequest(avatar_url="https://x/a.jpg", restart=False))
+    from src.agents_json import read_agents
+    entry = next(e for e in read_agents(fake_env["stack"] / ".env") if e.id == "paige")
+    assert entry.avatar_url == "https://x/a.jpg"
+
+    await update_agent("paige", UpdateRequest(avatar_url="", restart=False))
+    entry = next(e for e in read_agents(fake_env["stack"] / ".env") if e.id == "paige")
+    assert entry.avatar_url is None

@@ -247,3 +247,29 @@ def test_update_other_field_does_not_wipe_subtitle(client, fake_env):
     entries = read_agents(fake_env["stack"] / ".env")
     entry = next(e for e in entries if e.id == "olivia")
     assert entry.subtitle == "AI Head of Marketing"
+
+
+def test_patch_sets_and_clears_avatar_url(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+    }])
+    # set
+    r = client.patch("/v1/agents/olivia", json={"avatar_url": "https://x/shared/olivia.jpg?t=1"},
+                      headers=_auth())
+    assert r.status_code == 200
+    assert r.json()["avatar_url"] == "https://x/shared/olivia.jpg?t=1"
+    # list surfaces it
+    r2 = client.get("/v1/agents", headers=_auth())
+    agent = next(a for a in r2.json()["agents"] if a["id"] == "olivia")
+    assert agent["avatar_url"] == "https://x/shared/olivia.jpg?t=1"
+    # clear with ""
+    r = client.patch("/v1/agents/olivia", json={"avatar_url": ""}, headers=_auth())
+    assert r.status_code == 200
+    assert r.json()["avatar_url"] is None
+    from src.agents_json import read_agents
+    entries = read_agents(fake_env["stack"] / ".env")
+    entry = next(e for e in entries if e.id == "olivia")
+    assert entry.avatar_url is None

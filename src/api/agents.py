@@ -30,7 +30,7 @@ def _entry_to_agent(e, cfg: Config | None = None) -> dict:
         id=e.id, displayName=e.name, color=e.color,
         provider="anthropic", model=model or "unknown",
         gatewayPort=e.gateway_port, dashboardPort=e.dashboard_port,
-        needsIdentity=needs_identity, subtitle=e.subtitle,
+        needsIdentity=needs_identity, subtitle=e.subtitle, avatar_url=e.avatar_url,
     ).model_dump()
 
 
@@ -76,6 +76,7 @@ async def create(body: CreateAgent, request: Request) -> StreamingResponse:
         api_server_key=api_key,
         auth_method=body.authMethod,
         subtitle=body.subtitle,
+        avatar_url=body.avatar_url,
     )
 
     async def stream():

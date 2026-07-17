@@ -37,6 +37,7 @@ class CreateAgent(BaseModel):
     systemPrompt: Optional[str] = None
     enabledSkills: list[str] = Field(default_factory=list)
     subtitle: Optional[str] = Field(default=None, max_length=64)
+    avatar_url: Optional[str] = Field(default=None, max_length=512)
 
     @field_validator("name")
     @classmethod
@@ -62,6 +63,7 @@ class UpdateAgent(BaseModel):
     enabledSkills: Optional[list[str]] = None
     apiKey: Optional[str] = None
     subtitle: Optional[str] = Field(default=None, max_length=64)
+    avatar_url: Optional[str] = Field(default=None, max_length=512)
 
 
 class Agent(BaseModel):
@@ -76,6 +78,7 @@ class Agent(BaseModel):
     enabledSkills: list[str] = Field(default_factory=list)
     needsIdentity: bool = False
     subtitle: Optional[str] = None
+    avatar_url: Optional[str] = None
 
 
 class SetIdentityRequest(BaseModel):

@@ -43,6 +43,7 @@ class CreateRequest:
     # configured (Codex OAuth, Claude Code CLI, ambient env vars).
     auth_method: str = "api_key"
     subtitle: Optional[str] = None
+    avatar_url: Optional[str] = None
 
 
 def _pick_color(existing_colors: list[str]) -> str:
@@ -144,6 +145,7 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
                 color=color,
                 model=displayed_model,
                 subtitle=(req.subtitle.strip() or None) if req.subtitle is not None else None,
+                avatar_url=(req.avatar_url.strip() or None) if req.avatar_url is not None else None,
             )
             write_agent(env_path, entry)
             yield _ev("update_agents_json")
@@ -170,6 +172,7 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
                 systemPrompt=req.system_prompt,
                 enabledSkills=req.enabled_skills,
                 subtitle=(req.subtitle.strip() or None) if req.subtitle is not None else None,
+                avatar_url=(req.avatar_url.strip() or None) if req.avatar_url is not None else None,
             )
             yield {"event": "done", "agent": agent.model_dump(),
                    "duration_ms": int((time.monotonic() - started) * 1000)}
@@ -226,6 +229,7 @@ class UpdateRequest:
     enabledSkills: Optional[list[str]] = None
     apiKey: Optional[str] = None
     subtitle: Optional[str] = None
+    avatar_url: Optional[str] = None
     restart: bool = True
 
 
@@ -318,6 +322,10 @@ async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
             new_subtitle = req.subtitle.strip() or None   # "" clears
         else:
             new_subtitle = entry.subtitle                  # untouched
+        if req.avatar_url is not None:
+            new_avatar_url = req.avatar_url.strip() or None   # "" clears
+        else:
+            new_avatar_url = entry.avatar_url                 # untouched
         new_entry = AgentEntry(
             id=entry.id,
             name=req.displayName if req.displayName is not None else entry.name,
@@ -326,6 +334,7 @@ async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
             color=req.color if req.color is not None else entry.color,
             model=req.model if req.model is not None else entry.model,
             subtitle=new_subtitle,
+            avatar_url=new_avatar_url,
         )
         write_agent(env_path, new_entry)
 
