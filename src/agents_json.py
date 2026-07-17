@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import tempfile
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 _AGENTS_LINE = re.compile(r"^AGENTS_JSON=(.*)$", re.MULTILINE)
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -136,3 +138,27 @@ def set_env_key(env_path: Path, key: str, value: str) -> None:
         sep = "" if text.endswith("\n") or not text else "\n"
         text = f"{text}{sep}{line}\n"
     _write_env_atomic(env_path, text)
+
+
+def loopback_url_for(agent_id: str, kind: str) -> "str | None":
+    """Loopback URL for an agent's gateway ('gateway') or dashboard
+    ('dashboard'), derived from the stack .env's AGENTS_JSON ports.
+
+    Fallback for the HERMES_GATEWAY_URLS / HERMES_DASHBOARD_URLS proxy maps:
+    those are only re-rendered by the install scripts at provision time, so a
+    UI-created agent is missing from them until the next re-provision — its
+    /v1/runs probes 503 and the dashboard shows it OFFLINE (prod 'pam',
+    2026-07-17). AGENTS_JSON, by contrast, is maintained synchronously by
+    create/delete, so it is always current. The orchestrator runs host-native,
+    hence 127.0.0.1 rather than AGENTS_JSON's host.docker.internal URLs."""
+    from src.config import Config  # local import: Config has no dependency back here, but keep the module import-light
+
+    try:
+        env_path = Config.load().hermes_stack_dir / ".env"
+        for e in read_agents(env_path):
+            if e.id == agent_id:
+                port = e.gateway_port if kind == "gateway" else e.dashboard_port
+                return f"http://127.0.0.1:{port}"
+    except Exception:
+        _logger.warning("AGENTS_JSON fallback resolution failed for %s", agent_id, exc_info=True)
+    return None

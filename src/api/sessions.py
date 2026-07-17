@@ -15,6 +15,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
+from src.agents_json import loopback_url_for
 from src.api import authz
 from src.auth import require_bearer
 
@@ -42,16 +43,19 @@ def _warn_rbac_config_skip() -> None:
 
 def _dashboard_base(agent: str) -> str | None:
     """Per-agent Hermes dashboard base URL. HERMES_DASHBOARD_URLS is a JSON map
-    {agent: url} (mirrors HERMES_GATEWAY_URLS in runs.py)."""
+    {agent: url} (mirrors HERMES_GATEWAY_URLS in runs.py); on a map miss, fall
+    back to AGENTS_JSON-derived ports (see agents_json.loopback_url_for — the
+    map is only re-rendered at provision time and misses UI-created agents)."""
     raw = os.environ.get("HERMES_DASHBOARD_URLS", "").strip()
-    if not raw:
-        return None
-    try:
-        url = json.loads(raw).get(agent)
-    except (ValueError, AttributeError):
-        _logger.warning("HERMES_DASHBOARD_URLS is not a valid JSON object")
-        return None
-    return str(url).rstrip("/") if url else None
+    url = None
+    if raw:
+        try:
+            url = json.loads(raw).get(agent)
+        except (ValueError, AttributeError):
+            _logger.warning("HERMES_DASHBOARD_URLS is not a valid JSON object")
+    if url:
+        return str(url).rstrip("/")
+    return loopback_url_for(agent, "dashboard")
 
 
 def _sb() -> tuple[str, str] | None:

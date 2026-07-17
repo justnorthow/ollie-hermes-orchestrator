@@ -8,6 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from src.agents_json import loopback_url_for
 from src.api.extractors import EXTRACTORS
 from src.api import authz
 from src.auth import require_bearer
@@ -146,6 +147,13 @@ def _gateway_base(agent: str) -> str | None:
             url = None
         if url:
             return str(url).rstrip("/")
+    # Map miss: derive from AGENTS_JSON, which create_agent maintains
+    # synchronously — the map is only re-rendered at provision time, so a
+    # UI-created agent would otherwise 503 until the next re-provision
+    # (prod 'pam', 2026-07-17).
+    fallback = loopback_url_for(agent, "gateway")
+    if fallback:
+        return fallback
     base = os.environ.get("HERMES_GATEWAY_URL", "").strip().rstrip("/")
     return base or None
 
