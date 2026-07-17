@@ -1,4 +1,8 @@
 import logging
+import os
+import time
+
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from src.agents_json import read_agents
@@ -179,3 +183,44 @@ async def patch(agent_id: str, body: UpdateAgent, request: Request) -> dict:
         raise HTTPException(status_code=404 if result.get("error") == "not_found" else 400,
                             detail=result.get("error"))
     return await get_agent(agent_id, request)
+
+
+def _supabase_creds() -> "tuple[str, str] | None":
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    return (url, key) if url and key else None
+
+
+@router.post("/{agent_id}/avatar")
+async def upload_avatar(agent_id: str, request: Request) -> dict:
+    denied = authz.admin_denied(request)
+    if denied:
+        return denied
+    cfg = request.app.state.config
+    entries = read_agents(cfg.hermes_stack_dir / ".env")
+    if not any(e.id == agent_id for e in entries):
+        raise HTTPException(status_code=404, detail="agent not found")
+    creds = _supabase_creds()
+    if not creds:
+        raise HTTPException(status_code=503, detail="supabase not configured")
+    sb_url, key = creds
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="empty body")
+    # Instance-scoped path: the orchestrator is the only writer that knows its
+    # INSTANCE_ID, so this is how the shared bucket stays tenant-isolated on the
+    # one shared Supabase project. Service role bypasses storage RLS.
+    path = f"shared/{cfg.instance_id}/{agent_id}.jpg"
+    try:
+        resp = httpx.post(
+            f"{sb_url}/storage/v1/object/agent-avatars/{path}",
+            content=body,
+            headers={"apikey": key, "Authorization": f"Bearer {key}",
+                     "Content-Type": "image/jpeg", "x-upsert": "true"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"storage upload failed: {exc}")
+    public = f"{sb_url}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
+    return {"avatar_url": public}
