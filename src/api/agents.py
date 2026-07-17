@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
@@ -45,6 +46,28 @@ async def list_agents(request: Request) -> dict:
     entries = read_agents(cfg.hermes_stack_dir / ".env")
     reachable = set(authz.reachable_agent_ids(request, cfg))
     return {"agents": [_entry_to_agent(e, cfg) for e in entries if e.id in reachable]}
+
+
+@router.get("/avatars/mine")
+async def get_my_avatar_overrides(request: Request) -> dict:
+    # Routing note: this MUST be declared before GET /{agent_id} below, or
+    # FastAPI's declaration-order matching would let /{agent_id} capture the
+    # literal path "avatars" as an agent_id.
+    user_id = request.headers.get("X-Auth-User-Id", "").strip()
+    if not user_id:
+        # Lenient: a signed-out/internal caller simply has no overrides to load.
+        return {"overrides": {}}
+    creds = _supabase_creds()
+    if not creds:
+        return {"overrides": {}}
+    sb_url, key = creds
+    resp = httpx.get(
+        f"{sb_url}/rest/v1/agent_avatar_overrides?user_id=eq.{user_id}&select=agent_id,avatar_url",
+        headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    return {"overrides": {row["agent_id"]: row["avatar_url"] for row in resp.json()}}
 
 
 @router.get("/{agent_id}")
@@ -225,3 +248,90 @@ async def upload_avatar(agent_id: str, request: Request) -> dict:
         raise HTTPException(status_code=502, detail=f"storage upload failed: {exc}")
     public = f"{sb_url}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
     return {"avatar_url": public}
+
+
+def _trusted_user_id(request: Request) -> str:
+    """The authenticated member's Supabase user_id, set by nginx's cryptographic
+    auth_request and unforgeable by the browser (mirrors src/api/sessions.py)."""
+    user_id = request.headers.get("X-Auth-User-Id", "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="not signed in")
+    return user_id
+
+
+@router.post("/{agent_id}/avatar/mine")
+async def upload_my_avatar(agent_id: str, request: Request) -> dict:
+    """Member-scoped per-user avatar override. Orchestrator-mediated via the
+    service role (HS256) because the self-hosted storage-api rejects the
+    browser's ES256 user token. No RBAC/reachability gate: the override row is
+    keyed by the caller's own user_id and only ever affects the caller's own
+    rendering, so it's self-scoped and harmless regardless of target agent."""
+    user_id = _trusted_user_id(request)
+    cfg = request.app.state.config
+    entries = read_agents(cfg.hermes_stack_dir / ".env")
+    if not any(e.id == agent_id for e in entries):
+        raise HTTPException(status_code=404, detail="agent not found")
+    creds = _supabase_creds()
+    if not creds:
+        raise HTTPException(status_code=503, detail="supabase not configured")
+    sb_url, key = creds
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="empty body")
+    path = f"{user_id}/{agent_id}.jpg"
+    try:
+        resp = httpx.post(
+            f"{sb_url}/storage/v1/object/agent-avatars/{path}",
+            content=body,
+            headers={"apikey": key, "Authorization": f"Bearer {key}",
+                     "Content-Type": "image/jpeg", "x-upsert": "true"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        public = f"{sb_url}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
+        resp = httpx.post(
+            f"{sb_url}/rest/v1/agent_avatar_overrides",
+            json={"user_id": user_id, "agent_id": agent_id, "avatar_url": public,
+                  "updated_at": datetime.now(timezone.utc).isoformat()},
+            headers={"apikey": key, "Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json",
+                     "Prefer": "resolution=merge-duplicates,return=minimal"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"avatar override save failed: {exc}")
+    return {"avatar_url": public}
+
+
+@router.delete("/{agent_id}/avatar/mine")
+async def delete_my_avatar(agent_id: str, request: Request) -> dict:
+    """Remove the caller's per-user avatar override. Idempotent and self-scoped,
+    so no existence/reachability gate is needed (mirrors upload_my_avatar's
+    reasoning above)."""
+    user_id = _trusted_user_id(request)
+    creds = _supabase_creds()
+    if not creds:
+        raise HTTPException(status_code=503, detail="supabase not configured")
+    sb_url, key = creds
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Prefer": "return=minimal"}
+    try:
+        resp = httpx.delete(
+            f"{sb_url}/rest/v1/agent_avatar_overrides?user_id=eq.{user_id}&agent_id=eq.{agent_id}",
+            headers=headers,
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"avatar override delete failed: {exc}")
+    # Best-effort storage cleanup: the DB row is the source of truth, so an
+    # orphaned public object left behind by a failed delete here is harmless.
+    try:
+        httpx.delete(
+            f"{sb_url}/storage/v1/object/agent-avatars/{user_id}/{agent_id}.jpg",
+            headers=headers,
+            timeout=10.0,
+        ).raise_for_status()
+    except Exception:
+        _logger.warning("delete_my_avatar: storage object cleanup failed", exc_info=True)
+    return {"ok": True}
