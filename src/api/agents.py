@@ -2,6 +2,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
@@ -216,6 +217,21 @@ def _supabase_creds() -> "tuple[str, str] | None":
     return (url, key) if url and key else None
 
 
+def _supabase_public_base() -> "str | None":
+    """Browser-facing origin for public storage URLs. In the split self-hosted
+    setup SUPABASE_URL is the loopback Kong (for server-side calls) while
+    SUPABASE_ISSUER carries the public browser-facing origin; a public avatar URL
+    returned to the browser must use the latter or the browser can't load it.
+    Falls back to SUPABASE_URL when no issuer is set (non-split deployments)."""
+    issuer = os.environ.get("SUPABASE_ISSUER", "").strip()
+    if issuer:
+        parts = urlsplit(issuer)
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    return url or None
+
+
 @router.post("/{agent_id}/avatar")
 async def upload_avatar(agent_id: str, request: Request) -> dict:
     denied = authz.admin_denied(request)
@@ -247,7 +263,8 @@ async def upload_avatar(agent_id: str, request: Request) -> dict:
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"storage upload failed: {exc}")
-    public = f"{sb_url}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
+    pub = _supabase_public_base() or sb_url
+    public = f"{pub}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
     return {"avatar_url": public}
 
 
@@ -291,7 +308,8 @@ async def upload_my_avatar(agent_id: str, request: Request) -> dict:
             timeout=10.0,
         )
         resp.raise_for_status()
-        public = f"{sb_url}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
+        pub = _supabase_public_base() or sb_url
+        public = f"{pub}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
         resp = httpx.post(
             f"{sb_url}/rest/v1/agent_avatar_overrides",
             json={"user_id": user_id, "agent_id": agent_id, "avatar_url": public,
