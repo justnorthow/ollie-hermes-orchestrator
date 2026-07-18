@@ -10,18 +10,23 @@ _DASHBOARD_UNIT_TEMPLATE = """\
 [Unit]
 Description=Hermes Agent Dashboard ({name} profile)
 After=network.target
+# Cap restart attempts so a genuinely broken dashboard doesn't loop forever.
+# These are [Unit] keys — in [Service] systemd ignores them with a warning.
+StartLimitBurst=10
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=%h/.local/bin/hermes -p {name} dashboard --host 0.0.0.0 --port {port} --insecure --no-open
+# Loopback only: Hermes refuses a non-loopback bind without an auth provider,
+# which turns Restart=always into a crash-loop. The container dashboard reaches
+# this via the orchestrator proxy; keep it matching scripts/03-install-profile.sh
+# in ollie-hermes-install.
+ExecStart=%h/.local/bin/hermes -p {name} dashboard --host 127.0.0.1 --port {port} --insecure --no-open
 # Restart=always (not on-failure) so the dashboard comes back even when
 # `hermes update` SIGTERMs it (which is a clean exit, status 0).
 Restart=always
 RestartSec=5
-# Cap restart attempts so a genuinely broken dashboard doesn't loop forever.
-StartLimitBurst=10
-StartLimitIntervalSec=60
 
 [Install]
 WantedBy=default.target
