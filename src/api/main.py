@@ -17,6 +17,7 @@ from src.api.manage import router as manage_router
 from src.api.instance import router as instance_router
 from src.api.compliance import router as compliance_router
 from src.api.prefs import router as prefs_router
+from src.api.audio import router as audio_router
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ollie-orchestrator")
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(instance_router)
     app.include_router(compliance_router)
     app.include_router(prefs_router)
+    app.include_router(audio_router)
     return app
 
 
