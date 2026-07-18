@@ -275,6 +275,33 @@ def test_patch_sets_and_clears_avatar_url(client, fake_env):
     assert entry.avatar_url is None
 
 
+def test_list_agents_includes_voice(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+        "voice": "en-GB-RyanNeural",
+    }])
+    resp = client.get("/v1/agents", headers=_auth())
+    assert resp.status_code == 200
+    agent = next(a for a in resp.json()["agents"] if a["id"] == "olivia")
+    assert agent["voice"] == "en-GB-RyanNeural"
+
+
+def test_list_agents_voice_null_when_unset(client, fake_env):
+    _seed_agents_json(fake_env["stack"], [{
+        "id": "olivia", "name": "Olivia",
+        "gatewayUrl": "http://host.docker.internal:8643",
+        "dashboardUrl": "http://host.docker.internal:9121",
+        "color": "#7c3aed", "model": "gpt-5.5",
+    }])
+    resp = client.get("/v1/agents", headers=_auth())
+    assert resp.status_code == 200
+    agent = next(a for a in resp.json()["agents"] if a["id"] == "olivia")
+    assert agent["voice"] is None
+
+
 def test_list_agents_includes_scope(client, fake_env):
     _seed_agents_json(fake_env["stack"], [{
         "id": "olivia", "name": "Olivia",

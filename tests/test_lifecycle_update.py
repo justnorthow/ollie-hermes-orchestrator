@@ -1,4 +1,5 @@
 import pytest
+from src.agents_json import AgentEntry, read_agents, write_agent
 from src.lifecycle import create_agent, update_agent, CreateRequest, UpdateRequest
 
 
@@ -98,3 +99,33 @@ async def test_update_agent_clears_avatar_on_empty(fake_env):
     await update_agent("paige", UpdateRequest(avatar_url="", restart=False))
     entry = next(e for e in read_agents(fake_env["stack"] / ".env") if e.id == "paige")
     assert entry.avatar_url is None
+
+
+@pytest.mark.asyncio
+async def test_update_sets_and_clears_voice(fake_env):
+    env_path = fake_env["stack"] / ".env"
+    write_agent(env_path, AgentEntry(
+        id="marketing-agent", name="Olivia", gateway_port=8643,
+        dashboard_port=9121, color="#888888",
+    ))
+    r = await update_agent("marketing-agent", UpdateRequest(voice="en-US-EmmaNeural", restart=False))
+    assert r["ok"]
+    assert read_agents(env_path)[0].voice == "en-US-EmmaNeural"
+    r = await update_agent("marketing-agent", UpdateRequest(voice="", restart=False))
+    assert r["ok"]
+    assert read_agents(env_path)[0].voice is None
+
+
+@pytest.mark.asyncio
+async def test_update_preserves_scope_and_manager_visible(fake_env):
+    env_path = fake_env["stack"] / ".env"
+    write_agent(env_path, AgentEntry(
+        id="default", name="Ollie", gateway_port=8642, dashboard_port=9119,
+        color="#888888", scope="user", manager_visible=True, voice="en-GB-RyanNeural",
+    ))
+    r = await update_agent("default", UpdateRequest(displayName="Ollie2", restart=False))
+    assert r["ok"]
+    e = read_agents(env_path)[0]
+    assert e.scope == "user"
+    assert e.manager_visible is True
+    assert e.voice == "en-GB-RyanNeural"   # untouched update preserves voice too

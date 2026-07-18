@@ -64,6 +64,7 @@ class UpdateAgent(BaseModel):
     apiKey: Optional[str] = None
     subtitle: Optional[str] = Field(default=None, max_length=64)
     avatar_url: Optional[str] = Field(default=None, max_length=512)
+    voice: Optional[str] = Field(default=None, max_length=128)
 
 
 class Agent(BaseModel):
@@ -80,6 +81,7 @@ class Agent(BaseModel):
     subtitle: Optional[str] = None
     avatar_url: Optional[str] = None
     scope: Optional[str] = None
+    voice: Optional[str] = None
 
 
 class SetIdentityRequest(BaseModel):

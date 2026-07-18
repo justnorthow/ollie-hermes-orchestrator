@@ -230,6 +230,7 @@ class UpdateRequest:
     apiKey: Optional[str] = None
     subtitle: Optional[str] = None
     avatar_url: Optional[str] = None
+    voice: Optional[str] = None
     restart: bool = True
 
 
@@ -326,6 +327,10 @@ async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
             new_avatar_url = req.avatar_url.strip() or None   # "" clears
         else:
             new_avatar_url = entry.avatar_url                 # untouched
+        if req.voice is not None:
+            new_voice = req.voice.strip() or None   # "" clears
+        else:
+            new_voice = entry.voice                  # untouched
         new_entry = AgentEntry(
             id=entry.id,
             name=req.displayName if req.displayName is not None else entry.name,
@@ -335,6 +340,11 @@ async def update_agent(agent_id: str, req: "UpdateRequest") -> dict:
             model=req.model if req.model is not None else entry.model,
             subtitle=new_subtitle,
             avatar_url=new_avatar_url,
+            # scope/manager_visible were silently reset to defaults by every
+            # PATCH before (fail-closing members out of scope:"user" agents).
+            scope=entry.scope,
+            manager_visible=entry.manager_visible,
+            voice=new_voice,
         )
         write_agent(env_path, new_entry)
 
