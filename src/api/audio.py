@@ -27,16 +27,24 @@ router = APIRouter(prefix="/v1/audio", tags=["audio"], dependencies=[Depends(req
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024
 _MAX_SPEAK_CHARS = 5000
 _FALLBACK_VOICE = "en-US-AndrewMultilingualNeural"
-# Deliberately generous: exceeds the first-request model-download window (the
-# lazy singleton in _get_model downloads on first use). The whisper thread
-# can't be cancelled once started (asyncio.to_thread has no way to interrupt
-# a blocking call), so a timeout here only stops us from waiting on it
-# forever — the thread keeps running until it finishes. That's why the log
-# on timeout must be loud: it's the only signal an orphaned thread exists.
-_TRANSCRIBE_TIMEOUT_S = 300.0
+# The browser client aborts its fetch at 120s (OrchestratorClient.transcribeAudio),
+# so the server must give up before that or the client gives up first while a
+# single-flight semaphore slot stays held for nothing — a wedged request the
+# user can't retry is worse than a 504 they can retry immediately. Note the
+# first-request model download (see _get_model) happens under the semaphore
+# but *before* this timeout applies: that's a separate stage, timed only by
+# whatever the download itself takes. The whisper thread can't be cancelled
+# once started (asyncio.to_thread has no way to interrupt a blocking call), so
+# a timeout here only stops us from waiting on it forever — the thread keeps
+# running until it finishes. That's why the log on timeout must be loud: it's
+# the only signal an orphaned thread exists.
+_TRANSCRIBE_TIMEOUT_S = 100.0
 
-# Interactive endpoints; the bucket is an abuse backstop, not a quota.
-_bucket = TokenBucket(rate_per_min=30)
+# Interactive endpoints; each bucket is an abuse backstop, not a quota. Kept
+# separate per endpoint so a speak burst can't starve transcribe (or vice
+# versa) of its own allowance.
+_speak_bucket = TokenBucket(rate_per_min=30)
+_transcribe_bucket = TokenBucket(rate_per_min=30)
 
 
 def _trusted_user_id(request: Request) -> str:
@@ -46,8 +54,8 @@ def _trusted_user_id(request: Request) -> str:
     return user_id
 
 
-def _rate_check(user_id: str) -> None:
-    if not _bucket.take(user_id):
+def _rate_check(user_id: str, bucket: TokenBucket) -> None:
+    if not bucket.take(user_id):
         raise HTTPException(status_code=429, detail="rate limited")
 
 
@@ -82,7 +90,7 @@ async def _synthesize(text: str, voice: str) -> bytes:
 
 @router.post("/speak")
 async def speak(body: SpeakRequest, request: Request) -> Response:
-    _rate_check(_trusted_user_id(request))
+    _rate_check(_trusted_user_id(request), _speak_bucket)
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="empty text")
@@ -93,7 +101,7 @@ async def speak(body: SpeakRequest, request: Request) -> Response:
         audio = await asyncio.wait_for(_synthesize(text, voice), timeout=60.0)
     except Exception as exc:
         _logger.warning("tts synthesis failed (voice=%s): %s", voice, exc, exc_info=True)
-        raise HTTPException(status_code=502, detail="synthesis failed")
+        raise HTTPException(status_code=502, detail="synthesis failed") from None
     if not audio:
         raise HTTPException(status_code=502, detail="synthesis returned no audio")
     return Response(content=audio, media_type="audio/mpeg")
@@ -127,7 +135,7 @@ def _transcribe_with(model, data: bytes) -> str:
 
 @router.post("/transcribe")
 async def transcribe(request: Request) -> dict:
-    _rate_check(_trusted_user_id(request))
+    _rate_check(_trusted_user_id(request), _transcribe_bucket)
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="empty body")
@@ -138,7 +146,7 @@ async def transcribe(request: Request) -> dict:
             model = await asyncio.to_thread(_get_model)
         except Exception:
             _logger.exception("whisper model load failed")
-            raise HTTPException(status_code=502, detail="transcription engine unavailable")
+            raise HTTPException(status_code=502, detail="transcription engine unavailable") from None
         try:
             text = await asyncio.wait_for(
                 asyncio.to_thread(_transcribe_with, model, body),
@@ -149,8 +157,8 @@ async def transcribe(request: Request) -> dict:
                 "transcription timed out after %ss — whisper thread may still be running",
                 _TRANSCRIBE_TIMEOUT_S,
             )
-            raise HTTPException(status_code=504, detail="transcription timed out")
+            raise HTTPException(status_code=504, detail="transcription timed out") from None
         except Exception as exc:
             _logger.warning("transcription failed: %s", exc, exc_info=True)
-            raise HTTPException(status_code=400, detail="could not decode audio")
+            raise HTTPException(status_code=400, detail="could not decode audio") from None
     return {"text": text}

@@ -26,8 +26,9 @@ def ctx(tmp_path, monkeypatch):
     app.state.config = types.SimpleNamespace(hermes_stack_dir=stack)
     app.include_router(audio_router)
     app.dependency_overrides[require_bearer] = lambda: None
-    # fresh rate bucket per test so 429s can't leak between tests
-    monkeypatch.setattr(audio_mod, "_bucket", audio_mod.TokenBucket(rate_per_min=1000))
+    # fresh rate buckets per test so 429s can't leak between tests
+    monkeypatch.setattr(audio_mod, "_speak_bucket", audio_mod.TokenBucket(rate_per_min=1000))
+    monkeypatch.setattr(audio_mod, "_transcribe_bucket", audio_mod.TokenBucket(rate_per_min=1000))
     return TestClient(app), monkeypatch
 
 
@@ -89,9 +90,23 @@ def test_speak_engine_failure_is_502(ctx):
 def test_speak_rate_limited_is_429(ctx):
     c, monkeypatch = ctx
     _mock_synth(monkeypatch)
-    monkeypatch.setattr(audio_mod, "_bucket", audio_mod.TokenBucket(rate_per_min=1))
+    monkeypatch.setattr(audio_mod, "_speak_bucket", audio_mod.TokenBucket(rate_per_min=1))
     assert c.post("/v1/audio/speak", json={"text": "a", "agentId": "x"}, headers=AUTH).status_code == 200
     assert c.post("/v1/audio/speak", json={"text": "b", "agentId": "x"}, headers=AUTH).status_code == 429
+
+
+def test_speak_burst_does_not_rate_limit_transcribe(ctx):
+    # Separate buckets: exhausting /speak's allowance must not 429 /transcribe
+    # for the same user.
+    c, monkeypatch = ctx
+    _mock_synth(monkeypatch)
+    monkeypatch.setattr(audio_mod, "_speak_bucket", audio_mod.TokenBucket(rate_per_min=1))
+    assert c.post("/v1/audio/speak", json={"text": "a", "agentId": "x"}, headers=AUTH).status_code == 200
+    assert c.post("/v1/audio/speak", json={"text": "b", "agentId": "x"}, headers=AUTH).status_code == 429
+
+    monkeypatch.setattr(audio_mod, "_get_model", lambda: _FakeModel())
+    r = c.post("/v1/audio/transcribe", content=b"FAKEWEBM", headers=AUTH)
+    assert r.status_code == 200
 
 
 class _FakeSeg:
