@@ -63,13 +63,17 @@ async def get_my_avatar_overrides(request: Request) -> dict:
     if not creds:
         return {"overrides": {}}
     sb_url, key = creds
-    resp = await asyncio.to_thread(lambda: httpx.get(
-        f"{sb_url}/rest/v1/agent_avatar_overrides",
-        params={"user_id": f"eq.{user_id}", "select": "agent_id,avatar_url"},
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10.0,
-    ))
-    resp.raise_for_status()
+    try:
+        resp = await asyncio.to_thread(lambda: httpx.get(
+            f"{sb_url}/rest/v1/agent_avatar_overrides",
+            params={"user_id": f"eq.{user_id}", "select": "agent_id,avatar_url"},
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=10.0,
+        ))
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        _logger.exception("avatar overrides fetch failed for user_id=%s", user_id)
+        raise HTTPException(status_code=502, detail="upstream database error")
     return {"overrides": {row["agent_id"]: row["avatar_url"] for row in resp.json()}}
 
 
@@ -265,7 +269,8 @@ async def upload_avatar(agent_id: str, request: Request) -> dict:
         ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"storage upload failed: {exc}")
+        _logger.warning("avatar upload failed for agent_id=%s: %s", agent_id, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="upstream storage error")
     pub = _supabase_public_base() or sb_url
     public = f"{pub}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
     return {"avatar_url": public}
@@ -326,7 +331,8 @@ async def upload_my_avatar(agent_id: str, request: Request) -> dict:
         ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"avatar override save failed: {exc}")
+        _logger.warning("avatar override save failed for agent_id=%s: %s", agent_id, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="upstream storage error")
     return {"avatar_url": public}
 
 
@@ -352,7 +358,8 @@ async def delete_my_avatar(agent_id: str, request: Request) -> dict:
         ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"avatar override delete failed: {exc}")
+        _logger.warning("avatar override delete failed for agent_id=%s: %s", agent_id, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="upstream database error")
     # Best-effort storage cleanup: the DB row is the source of truth, so an
     # orphaned public object left behind by a failed delete here is harmless.
     try:

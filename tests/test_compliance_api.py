@@ -5,6 +5,7 @@ _compliance_denied, mirroring the DB's old governance_events RLS + the
 frontend RoleRoute OR-gate (compliance tag OR governance_view).
 """
 import types
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -98,12 +99,39 @@ def test_governance_events_calls_service_role_and_returns_events(allowed):
     monkeypatch.setattr(compliance.httpx, "get", fake_get)
     r = c.get("/v1/governance/events", headers=HEADERS_ID)
     assert r.status_code == 200
-    assert r.json() == {"events": [{"id": "1"}]}
+    assert r.json() == {"events": [{"id": "1"}], "capped": False}
     assert calls[0]["url"].endswith("/rest/v1/governance_events")
     assert calls[0]["params"]["order"] == "created_at.desc"
     assert calls[0]["params"]["limit"] == "1000"
     assert calls[0]["headers"]["apikey"] == "svc-key"
     assert calls[0]["headers"]["Authorization"] == "Bearer svc-key"
+
+
+def test_governance_events_capped_true_at_1000_rows(allowed):
+    c, monkeypatch = allowed
+    monkeypatch.setattr(compliance.httpx, "get",
+                         lambda *a, **k: _Resp(json_data=[{"id": str(i)} for i in range(1000)]))
+    r = c.get("/v1/governance/events", headers=HEADERS_ID)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["capped"] is True
+    assert len(body["events"]) == 1000
+
+
+def test_governance_events_502_on_upstream_error_hides_internal_url(allowed):
+    c, monkeypatch = allowed
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError("server error", request=request, response=response)
+
+    monkeypatch.setattr(compliance.httpx, "get", fake_get)
+    r = c.get("/v1/governance/events", headers=HEADERS_ID)
+    assert r.status_code == 502
+    assert "127.0.0.1" not in r.text
+    assert "8000" not in r.text
+    assert r.json() == {"error": "upstream database error"}
 
 
 # --- GET /v1/compliance/rules ---
@@ -138,6 +166,22 @@ def test_rules_uncapped_when_under_limit(allowed):
     assert r.json()["capped"] is False
 
 
+def test_rules_502_on_upstream_error_hides_internal_url(allowed):
+    c, monkeypatch = allowed
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError("server error", request=request, response=response)
+
+    monkeypatch.setattr(compliance.httpx, "get", fake_get)
+    r = c.get("/v1/compliance/rules", headers=HEADERS_ID)
+    assert r.status_code == 502
+    assert "127.0.0.1" not in r.text
+    assert "8000" not in r.text
+    assert r.json() == {"error": "upstream database error"}
+
+
 # --- GET /v1/compliance/config ---
 
 def test_config_maps_auto_approve(allowed):
@@ -157,6 +201,22 @@ def test_config_defaults_when_no_row(allowed):
     r = c.get("/v1/compliance/config", headers=HEADERS_ID)
     assert r.status_code == 200
     assert r.json() == {"high": False, "medium": False}
+
+
+def test_config_502_on_upstream_error_hides_internal_url(allowed):
+    c, monkeypatch = allowed
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError("server error", request=request, response=response)
+
+    monkeypatch.setattr(compliance.httpx, "get", fake_get)
+    r = c.get("/v1/compliance/config", headers=HEADERS_ID)
+    assert r.status_code == 502
+    assert "127.0.0.1" not in r.text
+    assert "8000" not in r.text
+    assert r.json() == {"error": "upstream database error"}
 
 
 # --- POST /v1/compliance/review ---

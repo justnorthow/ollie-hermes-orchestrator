@@ -77,13 +77,18 @@ def governance_events(request: Request):
     if not creds:
         return _NOT_CONFIGURED
     sb, key = creds
-    resp = httpx.get(
-        f"{sb}/rest/v1/governance_events",
-        params={"select": "*", "order": "created_at.desc", "limit": "1000"},
-        headers=_sb_headers(key), timeout=10.0,
-    )
-    resp.raise_for_status()
-    return {"events": resp.json()}
+    try:
+        resp = httpx.get(
+            f"{sb}/rest/v1/governance_events",
+            params={"select": "*", "order": "created_at.desc", "limit": "1000"},
+            headers=_sb_headers(key), timeout=10.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        _logger.exception("governance_events fetch failed")
+        return JSONResponse({"error": "upstream database error"}, status_code=502)
+    events = resp.json()
+    return {"events": events, "capped": len(events) >= 1000}
 
 
 @router.get("/v1/compliance/rules")
@@ -100,11 +105,15 @@ def list_rules(request: Request):
         v = request.query_params.get(q)
         if v:
             params[q] = f"eq.{v}"
-    resp = httpx.get(
-        f"{sb}/rest/v1/compliance_rules", params=params,
-        headers=_sb_headers(key), timeout=10.0,
-    )
-    resp.raise_for_status()
+    try:
+        resp = httpx.get(
+            f"{sb}/rest/v1/compliance_rules", params=params,
+            headers=_sb_headers(key), timeout=10.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        _logger.exception("compliance_rules fetch failed")
+        return JSONResponse({"error": "upstream database error"}, status_code=502)
     rules = resp.json()
     return {"rules": rules, "capped": len(rules) >= 1000}
 
@@ -118,12 +127,16 @@ def get_config(request: Request):
     if not creds:
         return _NOT_CONFIGURED
     sb, key = creds
-    resp = httpx.get(
-        f"{sb}/rest/v1/compliance_config",
-        params={"id": "eq.1", "select": "auto_approve"},
-        headers=_sb_headers(key), timeout=10.0,
-    )
-    resp.raise_for_status()
+    try:
+        resp = httpx.get(
+            f"{sb}/rest/v1/compliance_config",
+            params={"id": "eq.1", "select": "auto_approve"},
+            headers=_sb_headers(key), timeout=10.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        _logger.exception("compliance_config fetch failed")
+        return JSONResponse({"error": "upstream database error"}, status_code=502)
     rows = resp.json()
     aa = (rows[0]["auto_approve"] if rows else {}) or {}
     return {"high": bool(aa.get("high")), "medium": bool(aa.get("medium"))}

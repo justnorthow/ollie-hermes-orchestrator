@@ -1,4 +1,5 @@
 import types
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -203,3 +204,19 @@ def test_get_avatars_mine_no_identity_returns_empty(ctx):
     r = c.get("/v1/agents/avatars/mine")
     assert r.status_code == 200
     assert r.json() == {"overrides": {}}
+
+
+def test_get_avatars_mine_502_on_upstream_error_hides_internal_url(ctx):
+    c, monkeypatch = ctx
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError("server error", request=request, response=response)
+
+    monkeypatch.setattr(agents_mod.httpx, "get", fake_get)
+    r = c.get("/v1/agents/avatars/mine", headers={"X-Auth-User-Id": "u1"})
+    assert r.status_code == 502
+    assert "127.0.0.1" not in r.text
+    assert "8000" not in r.text
+    assert r.json() == {"detail": "upstream database error"}

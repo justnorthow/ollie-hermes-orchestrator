@@ -8,6 +8,7 @@ browser). Mirrors the pattern in tests/test_agent_avatar_mine.py.
 """
 import types
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -87,6 +88,22 @@ def test_get_mine_requires_identity(ctx):
     monkeypatch.setattr(profile_mod.httpx, "get", fake_get)
     r = c.get("/v1/profile/mine")
     assert r.status_code == 401
+
+
+def test_get_mine_502_on_upstream_error_hides_internal_url(ctx):
+    c, monkeypatch = ctx
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError("server error", request=request, response=response)
+
+    monkeypatch.setattr(profile_mod.httpx, "get", fake_get)
+    r = c.get("/v1/profile/mine", headers={"X-Auth-User-Id": "u1", "X-Auth-Email": "a@b.co"})
+    assert r.status_code == 502
+    assert "127.0.0.1" not in r.text
+    assert "8000" not in r.text
+    assert r.json() == {"detail": "upstream database error"}
 
 
 # ---------------------------------------------------------------------------

@@ -122,13 +122,17 @@ async def get_my_profile(request: Request) -> dict:
     if not creds:
         return {"profile": None, "email": email}
     sb_url, key = creds
-    resp = await asyncio.to_thread(lambda: httpx.get(
-        f"{sb_url}/rest/v1/profiles",
-        params={"user_id": f"eq.{user_id}", "select": "*"},
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=10.0,
-    ))
-    resp.raise_for_status()
+    try:
+        resp = await asyncio.to_thread(lambda: httpx.get(
+            f"{sb_url}/rest/v1/profiles",
+            params={"user_id": f"eq.{user_id}", "select": "*"},
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=10.0,
+        ))
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        _logger.exception("profile/mine fetch failed for user_id=%s", user_id)
+        raise HTTPException(status_code=502, detail="upstream database error")
     rows = resp.json()
     profile = rows[0] if rows else None
     return {"profile": profile, "email": email}
@@ -159,7 +163,8 @@ async def put_my_profile(request: Request) -> dict:
         ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"profile save failed: {exc}")
+        _logger.warning("profile save failed for user_id=%s: %s", user_id, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="upstream database error")
     return {"ok": True}
 
 
@@ -190,7 +195,8 @@ async def upload_profile_image(kind: str, request: Request) -> dict:
         ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"image upload failed: {exc}")
+        _logger.warning("profile image upload failed for user_id=%s, kind=%s: %s", user_id, kind, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="upstream storage error")
     pub = _supabase_public_base() or sb_url
     url = f"{pub}/storage/v1/object/public/profile-images/{path}?t={int(time.time() * 1000)}"
     return {"url": url}
