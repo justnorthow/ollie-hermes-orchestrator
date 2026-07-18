@@ -90,3 +90,67 @@ def test_speak_rate_limited_is_429(ctx):
     monkeypatch.setattr(audio_mod, "_bucket", audio_mod.TokenBucket(rate_per_min=1))
     assert c.post("/v1/audio/speak", json={"text": "a", "agentId": "x"}, headers=AUTH).status_code == 200
     assert c.post("/v1/audio/speak", json={"text": "b", "agentId": "x"}, headers=AUTH).status_code == 429
+
+
+class _FakeSeg:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeModel:
+    def __init__(self, segs=("hello", "world")):
+        self.calls = 0
+        self._segs = segs
+
+    def transcribe(self, f):
+        self.calls += 1
+        return [_FakeSeg(f" {s} ") for s in self._segs], {"language": "en"}
+
+
+def test_transcribe_requires_signed_in_user(ctx):
+    c, _ = ctx
+    assert c.post("/v1/audio/transcribe", content=b"xx").status_code == 401
+
+
+def test_transcribe_joins_segments(ctx):
+    c, monkeypatch = ctx
+    model = _FakeModel()
+    monkeypatch.setattr(audio_mod, "_get_model", lambda: model)
+    r = c.post("/v1/audio/transcribe", content=b"FAKEWEBM", headers=AUTH)
+    assert r.status_code == 200
+    assert r.json() == {"text": "hello world"}
+    assert model.calls == 1
+
+
+def test_transcribe_caps(ctx):
+    c, monkeypatch = ctx
+    monkeypatch.setattr(audio_mod, "_get_model", lambda: _FakeModel())
+    assert c.post("/v1/audio/transcribe", content=b"", headers=AUTH).status_code == 400
+    big = b"x" * (audio_mod._MAX_AUDIO_BYTES + 1)
+    assert c.post("/v1/audio/transcribe", content=big, headers=AUTH).status_code == 413
+
+
+def test_transcribe_decode_failure_is_400(ctx):
+    c, monkeypatch = ctx
+    class _Broken:
+        def transcribe(self, f):
+            raise ValueError("not audio")
+    monkeypatch.setattr(audio_mod, "_get_model", lambda: _Broken())
+    r = c.post("/v1/audio/transcribe", content=b"not-audio", headers=AUTH)
+    assert r.status_code == 400
+
+
+def test_transcribe_model_load_failure_is_502(ctx):
+    c, monkeypatch = ctx
+    def boom():
+        raise RuntimeError("no ctranslate2")
+    monkeypatch.setattr(audio_mod, "_get_model", boom)
+    assert c.post("/v1/audio/transcribe", content=b"xx", headers=AUTH).status_code == 502
+
+
+def test_transcribe_silence_returns_empty_text(ctx):
+    c, monkeypatch = ctx
+    monkeypatch.setattr(audio_mod, "_get_model", lambda: _FakeModel(segs=()))
+    r = c.post("/v1/audio/transcribe", content=b"quiet", headers=AUTH)
+    assert r.status_code == 200
+    assert r.json() == {"text": ""}

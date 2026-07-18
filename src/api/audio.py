@@ -90,3 +90,51 @@ async def speak(body: SpeakRequest, request: Request) -> Response:
     if not audio:
         raise HTTPException(status_code=502, detail="synthesis returned no audio")
     return Response(content=audio, media_type="audio/mpeg")
+
+
+_whisper_model = None
+# Single-flight: transcription is CPU-bound; queue concurrent requests
+# instead of stacking whisper runs on a small VPS.
+_transcribe_gate = asyncio.Semaphore(1)
+
+
+def _get_model():
+    """Lazy process-wide singleton so idle orchestrator memory stays flat and
+    startup never blocks on a model download. First call on a box downloads
+    the model to the user cache (shared with Hermes — same service user)."""
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+
+        name = os.environ.get("WHISPER_MODEL", "").strip() or "base"
+        _logger.info("loading whisper model %r (first transcription request)", name)
+        _whisper_model = WhisperModel(name, device="cpu", compute_type="int8")
+    return _whisper_model
+
+
+def _transcribe_with(model, data: bytes) -> str:
+    # faster-whisper decodes WebM/Opus via its bundled PyAV — no ffmpeg binary.
+    segments, _info = model.transcribe(io.BytesIO(data))
+    return " ".join(s.text.strip() for s in segments).strip()
+
+
+@router.post("/transcribe")
+async def transcribe(request: Request) -> dict:
+    _rate_check(_trusted_user_id(request))
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="empty body")
+    if len(body) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="audio too large")
+    async with _transcribe_gate:
+        try:
+            model = await asyncio.to_thread(_get_model)
+        except Exception:
+            _logger.exception("whisper model load failed")
+            raise HTTPException(status_code=502, detail="transcription engine unavailable")
+        try:
+            text = await asyncio.to_thread(_transcribe_with, model, body)
+        except Exception as exc:
+            _logger.warning("transcription failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=400, detail="could not decode audio")
+    return {"text": text}
