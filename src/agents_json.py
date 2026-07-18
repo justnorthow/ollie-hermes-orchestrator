@@ -23,6 +23,7 @@ class AgentEntry:
     avatar_url: Optional[str] = None
     scope: str = "company"
     manager_visible: bool = False
+    voice: Optional[str] = None
 
 
 def _gateway_url(port: int) -> str:
@@ -47,6 +48,8 @@ def _entry_to_json(e: AgentEntry) -> dict:
         d["subtitle"] = e.subtitle
     if e.avatar_url:
         d["avatar_url"] = e.avatar_url
+    if e.voice:
+        d["voice"] = e.voice
     d["scope"] = e.scope
     d["manager_visible"] = e.manager_visible
     return d
@@ -64,6 +67,7 @@ def _json_to_entry(d: dict) -> AgentEntry:
         avatar_url=d.get("avatar_url"),
         scope=d.get("scope", "company"),
         manager_visible=bool(d.get("manager_visible", False)),
+        voice=d.get("voice"),
     )
 
 

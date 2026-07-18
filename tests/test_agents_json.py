@@ -196,3 +196,27 @@ def test_legacy_json_without_avatar_url_parses():
     d = {"id": "x", "name": "X", "gatewayUrl": "http://host.docker.internal:9100",
          "dashboardUrl": "http://host.docker.internal:9101", "color": "#888888"}
     assert _json_to_entry(d).avatar_url is None
+
+
+def test_voice_round_trips(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("AGENTS_JSON=[]\n")
+    write_agent(env, AgentEntry(
+        id="default", name="Ollie", gateway_port=8642, dashboard_port=9119,
+        color="#888888", voice="en-GB-RyanNeural",
+    ))
+    entries = read_agents(env)
+    assert entries[0].voice == "en-GB-RyanNeural"
+    # serialized compactly under the "voice" key
+    assert '"voice":"en-GB-RyanNeural"' in env.read_text()
+
+
+def test_voice_absent_is_none_and_not_serialized(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("AGENTS_JSON=[]\n")
+    write_agent(env, AgentEntry(
+        id="default", name="Ollie", gateway_port=8642, dashboard_port=9119,
+        color="#888888",
+    ))
+    assert read_agents(env)[0].voice is None
+    assert '"voice"' not in env.read_text()
