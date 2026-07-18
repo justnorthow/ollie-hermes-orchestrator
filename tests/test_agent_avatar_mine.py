@@ -127,6 +127,19 @@ def test_post_avatar_mine_requires_identity(ctx):
     assert post_calls == []
 
 
+def test_post_avatar_mine_rejects_oversized_body(ctx):
+    c, monkeypatch = ctx
+
+    def fake_post(*a, **k):
+        raise AssertionError("should not call supabase for oversized body")
+
+    monkeypatch.setattr(agents_mod.httpx, "post", fake_post)
+    oversized = b"x" * (5 * 1024 * 1024 + 1)
+    r = c.post("/v1/agents/ollie/avatar/mine", content=oversized,
+               headers={"X-Auth-User-Id": "u1", "Content-Type": "image/jpeg"})
+    assert r.status_code == 413
+
+
 def test_delete_avatar_mine_removes_override_row(ctx):
     c, monkeypatch = ctx
     delete_calls = []

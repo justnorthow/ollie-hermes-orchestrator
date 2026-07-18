@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -62,12 +63,12 @@ async def get_my_avatar_overrides(request: Request) -> dict:
     if not creds:
         return {"overrides": {}}
     sb_url, key = creds
-    resp = httpx.get(
+    resp = await asyncio.to_thread(lambda: httpx.get(
         f"{sb_url}/rest/v1/agent_avatar_overrides",
         params={"user_id": f"eq.{user_id}", "select": "agent_id,avatar_url"},
         headers={"apikey": key, "Authorization": f"Bearer {key}"},
         timeout=10.0,
-    )
+    ))
     resp.raise_for_status()
     return {"overrides": {row["agent_id"]: row["avatar_url"] for row in resp.json()}}
 
@@ -248,18 +249,20 @@ async def upload_avatar(agent_id: str, request: Request) -> dict:
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="empty body")
+    if len(body) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="image too large")
     # Instance-scoped path: the orchestrator is the only writer that knows its
     # INSTANCE_ID, so this is how the shared bucket stays tenant-isolated on the
     # one shared Supabase project. Service role bypasses storage RLS.
     path = f"shared/{cfg.instance_id}/{agent_id}.jpg"
     try:
-        resp = httpx.post(
+        resp = await asyncio.to_thread(lambda: httpx.post(
             f"{sb_url}/storage/v1/object/agent-avatars/{path}",
             content=body,
             headers={"apikey": key, "Authorization": f"Bearer {key}",
                      "Content-Type": "image/jpeg", "x-upsert": "true"},
             timeout=10.0,
-        )
+        ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"storage upload failed: {exc}")
@@ -298,19 +301,21 @@ async def upload_my_avatar(agent_id: str, request: Request) -> dict:
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="empty body")
+    if len(body) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="image too large")
     path = f"{user_id}/{agent_id}.jpg"
     try:
-        resp = httpx.post(
+        resp = await asyncio.to_thread(lambda: httpx.post(
             f"{sb_url}/storage/v1/object/agent-avatars/{path}",
             content=body,
             headers={"apikey": key, "Authorization": f"Bearer {key}",
                      "Content-Type": "image/jpeg", "x-upsert": "true"},
             timeout=10.0,
-        )
+        ))
         resp.raise_for_status()
         pub = _supabase_public_base() or sb_url
         public = f"{pub}/storage/v1/object/public/agent-avatars/{path}?t={int(time.time() * 1000)}"
-        resp = httpx.post(
+        resp = await asyncio.to_thread(lambda: httpx.post(
             f"{sb_url}/rest/v1/agent_avatar_overrides",
             json={"user_id": user_id, "agent_id": agent_id, "avatar_url": public,
                   "updated_at": datetime.now(timezone.utc).isoformat()},
@@ -318,7 +323,7 @@ async def upload_my_avatar(agent_id: str, request: Request) -> dict:
                      "Content-Type": "application/json",
                      "Prefer": "resolution=merge-duplicates,return=minimal"},
             timeout=10.0,
-        )
+        ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"avatar override save failed: {exc}")
@@ -339,23 +344,24 @@ async def delete_my_avatar(agent_id: str, request: Request) -> dict:
     sb_url, key = creds
     headers = {"apikey": key, "Authorization": f"Bearer {key}", "Prefer": "return=minimal"}
     try:
-        resp = httpx.delete(
+        resp = await asyncio.to_thread(lambda: httpx.delete(
             f"{sb_url}/rest/v1/agent_avatar_overrides",
             params={"user_id": f"eq.{user_id}", "agent_id": f"eq.{agent_id}"},
             headers=headers,
             timeout=10.0,
-        )
+        ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"avatar override delete failed: {exc}")
     # Best-effort storage cleanup: the DB row is the source of truth, so an
     # orphaned public object left behind by a failed delete here is harmless.
     try:
-        httpx.delete(
+        cleanup_resp = await asyncio.to_thread(lambda: httpx.delete(
             f"{sb_url}/storage/v1/object/agent-avatars/{user_id}/{agent_id}.jpg",
             headers=headers,
             timeout=10.0,
-        ).raise_for_status()
+        ))
+        cleanup_resp.raise_for_status()
     except Exception:
         _logger.warning("delete_my_avatar: storage object cleanup failed", exc_info=True)
     return {"ok": True}

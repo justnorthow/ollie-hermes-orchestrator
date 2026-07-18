@@ -44,6 +44,22 @@ def _compliance_denied(request: Request) -> "JSONResponse | None":
     return None
 
 
+def _compliance_write_denied(request: Request) -> "JSONResponse | None":
+    """Stricter gate for mutating endpoints. governance_view is a READ-oversight
+    grant (mirrors the DB's old governance_events RLS) and must NOT by itself
+    authorize approving/rejecting compliance rules or toggling auto-approve;
+    only the global 'compliance' tag or an account_admin+ tier may write."""
+    uid = request.headers.get("X-Auth-User-Id", "").strip()
+    if not uid:
+        return JSONResponse({"error": "not signed in"}, status_code=401)
+    cfg = request.app.state.config
+    tier = roles.resolve_tier(cfg.instance_id, uid)
+    allowed = ("compliance" in roles.list_user_tags(uid)) or roles.is_at_least(tier, "account_admin")
+    if not allowed:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return None
+
+
 def _sb_headers(key: str) -> dict:
     return {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
@@ -121,7 +137,7 @@ class ReviewBody(BaseModel):
 
 @router.post("/v1/compliance/review")
 def review(body: ReviewBody, request: Request):
-    denied = _compliance_denied(request)
+    denied = _compliance_write_denied(request)
     if denied:
         return denied
     if body.decision not in ("verified", "rejected"):
@@ -152,7 +168,7 @@ class AutoApproveBody(BaseModel):
 
 @router.post("/v1/compliance/auto-approve")
 def auto_approve(body: AutoApproveBody, request: Request):
-    denied = _compliance_denied(request)
+    denied = _compliance_write_denied(request)
     if denied:
         return denied
     if body.tier not in ("high", "medium"):
@@ -199,7 +215,18 @@ def traiga_readiness(request: Request):
         window_resp.raise_for_status()
     except httpx.HTTPError as exc:
         return JSONResponse({"error": f"readiness failed: {exc}"}, status_code=502)
-    counts = counts_resp.json()
+    # PostgREST returns count(*)::bigint as a JSON string on these boxes; coerce
+    # to int here so the frontend (and the regulator-facing TRAIGA report) don't
+    # do string math ("0"+"3") or string comparisons ("0"===0) on these counts.
+    counts = []
+    for row in counts_resp.json():
+        row = dict(row)
+        row["n"] = int(row["n"])
+        counts.append(row)
     win = window_resp.json()
-    window = win[0] if win else {"total": 0, "first_at": None, "last_at": None}
+    if win:
+        window = dict(win[0])
+        window["total"] = int(window["total"])
+    else:
+        window = {"total": 0, "first_at": None, "last_at": None}
     return {"counts": counts, "window": window}

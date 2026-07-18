@@ -42,10 +42,12 @@ def ctx(monkeypatch):
 
 @pytest.fixture
 def allowed(ctx):
-    """A caller that passes the authz gate via the compliance tag."""
+    """A caller that passes the authz gate via the compliance tag (also grants
+    the stricter write gate, since the tag short-circuits it)."""
     c, monkeypatch = ctx
     monkeypatch.setattr(roles, "list_user_tags", lambda uid: ["compliance"])
     monkeypatch.setattr(roles, "resolve_governance_view", lambda inst, uid: False)
+    monkeypatch.setattr(roles, "resolve_tier", lambda inst, uid: "member")
     return c, monkeypatch
 
 
@@ -230,6 +232,68 @@ def test_auto_approve_high_calls_rpc(allowed):
     assert calls[0]["json"] == {"p_tier": "high", "p_enabled": True, "p_verified_by": "a@b.co"}
 
 
+# --- write gate: governance_view alone must not authorize writes ---
+
+def test_governance_view_only_denied_on_review_and_auto_approve(ctx):
+    c, monkeypatch = ctx
+    monkeypatch.setattr(roles, "list_user_tags", lambda uid: [])
+    monkeypatch.setattr(roles, "resolve_governance_view", lambda inst, uid: True)
+    monkeypatch.setattr(roles, "resolve_tier", lambda inst, uid: "member")
+    monkeypatch.setattr(compliance.httpx, "post",
+                         lambda *a, **k: pytest.fail("must not call RPC when write-denied"))
+
+    r = c.post("/v1/compliance/review", json={"ruleKeys": ["a"], "decision": "verified"},
+               headers=HEADERS_ID)
+    assert r.status_code == 403
+
+    r = c.post("/v1/compliance/auto-approve", json={"tier": "high", "enabled": True},
+               headers=HEADERS_ID)
+    assert r.status_code == 403
+
+
+def test_governance_view_only_still_allowed_on_reads(ctx):
+    c, monkeypatch = ctx
+    monkeypatch.setattr(roles, "list_user_tags", lambda uid: [])
+    monkeypatch.setattr(roles, "resolve_governance_view", lambda inst, uid: True)
+    monkeypatch.setattr(compliance.httpx, "get", lambda *a, **k: _Resp(json_data=[]))
+    r = c.get("/v1/governance/events", headers=HEADERS_ID)
+    assert r.status_code == 200
+    r = c.get("/v1/compliance/rules", headers=HEADERS_ID)
+    assert r.status_code == 200
+
+
+def test_compliance_tag_allowed_on_writes(ctx):
+    c, monkeypatch = ctx
+    monkeypatch.setattr(roles, "list_user_tags", lambda uid: ["compliance"])
+    monkeypatch.setattr(roles, "resolve_governance_view", lambda inst, uid: False)
+    monkeypatch.setattr(roles, "resolve_tier", lambda inst, uid: "member")
+    monkeypatch.setattr(compliance.httpx, "post", lambda *a, **k: _Resp(json_data=1))
+
+    r = c.post("/v1/compliance/review", json={"ruleKeys": ["a"], "decision": "verified"},
+               headers=HEADERS_ID)
+    assert r.status_code == 200
+
+    r = c.post("/v1/compliance/auto-approve", json={"tier": "high", "enabled": True},
+               headers=HEADERS_ID)
+    assert r.status_code == 200
+
+
+def test_account_admin_allowed_on_writes(ctx):
+    c, monkeypatch = ctx
+    monkeypatch.setattr(roles, "list_user_tags", lambda uid: [])
+    monkeypatch.setattr(roles, "resolve_governance_view", lambda inst, uid: False)
+    monkeypatch.setattr(roles, "resolve_tier", lambda inst, uid: "account_admin")
+    monkeypatch.setattr(compliance.httpx, "post", lambda *a, **k: _Resp(json_data=1))
+
+    r = c.post("/v1/compliance/review", json={"ruleKeys": ["a"], "decision": "verified"},
+               headers=HEADERS_ID)
+    assert r.status_code == 200
+
+    r = c.post("/v1/compliance/auto-approve", json={"tier": "high", "enabled": True},
+               headers=HEADERS_ID)
+    assert r.status_code == 200
+
+
 # --- GET /v1/traiga/readiness ---
 
 def test_traiga_readiness_missing_params_400(allowed):
@@ -245,14 +309,14 @@ def test_traiga_readiness_calls_both_rpcs(allowed):
     def fake_post(url, json=None, headers=None, timeout=None):
         calls.append(dict(url=url, json=json))
         if url.endswith("traiga_readiness_counts"):
-            return _Resp(json_data=[{"tier": "high", "count": 2}])
+            return _Resp(json_data=[{"app": "ollie", "event_type": "x", "status": "verified", "n": 2}])
         return _Resp(json_data=[{"total": 2, "first_at": "t1", "last_at": "t2"}])
 
     monkeypatch.setattr(compliance.httpx, "post", fake_post)
     r = c.get("/v1/traiga/readiness?from=2026-01-01&to=2026-02-01", headers=HEADERS_ID)
     assert r.status_code == 200
     body = r.json()
-    assert body["counts"] == [{"tier": "high", "count": 2}]
+    assert body["counts"] == [{"app": "ollie", "event_type": "x", "status": "verified", "n": 2}]
     assert body["window"] == {"total": 2, "first_at": "t1", "last_at": "t2"}
     assert len(calls) == 2
     assert calls[0]["json"] == {"p_from": "2026-01-01", "p_to": "2026-02-01"}
@@ -266,3 +330,29 @@ def test_traiga_readiness_empty_window_fallback(allowed):
     r = c.get("/v1/traiga/readiness?from=2026-01-01&to=2026-02-01", headers=HEADERS_ID)
     assert r.status_code == 200
     assert r.json()["window"] == {"total": 0, "first_at": None, "last_at": None}
+
+
+def test_traiga_readiness_coerces_bigint_strings(allowed):
+    """PostgREST returns count(*)::bigint as JSON strings on these boxes; the
+    endpoint must coerce n/total to real ints so the frontend doesn't do
+    string math ("0"+"3") or string comparisons ("0"===0) on the report."""
+    c, monkeypatch = allowed
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        if url.endswith("traiga_readiness_counts"):
+            return _Resp(json_data=[
+                {"app": "ollie", "event_type": "x", "status": "verified", "n": "3"},
+                {"app": "ollie", "event_type": "y", "status": "rejected", "n": "0"},
+            ])
+        return _Resp(json_data=[{"total": "0", "first_at": "t1", "last_at": "t2"}])
+
+    monkeypatch.setattr(compliance.httpx, "post", fake_post)
+    r = c.get("/v1/traiga/readiness?from=2026-01-01&to=2026-02-01", headers=HEADERS_ID)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["counts"][0]["n"] == 3
+    assert isinstance(body["counts"][0]["n"], int)
+    assert body["counts"][1]["n"] == 0
+    assert isinstance(body["counts"][1]["n"], int)
+    assert body["window"]["total"] == 0
+    assert isinstance(body["window"]["total"], int)

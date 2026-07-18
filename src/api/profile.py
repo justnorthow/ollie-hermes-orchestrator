@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -121,12 +122,12 @@ async def get_my_profile(request: Request) -> dict:
     if not creds:
         return {"profile": None, "email": email}
     sb_url, key = creds
-    resp = httpx.get(
+    resp = await asyncio.to_thread(lambda: httpx.get(
         f"{sb_url}/rest/v1/profiles",
         params={"user_id": f"eq.{user_id}", "select": "*"},
         headers={"apikey": key, "Authorization": f"Bearer {key}"},
         timeout=10.0,
-    )
+    ))
     resp.raise_for_status()
     rows = resp.json()
     profile = rows[0] if rows else None
@@ -148,14 +149,14 @@ async def put_my_profile(request: Request) -> dict:
     payload["user_id"] = user_id
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     try:
-        resp = httpx.post(
+        resp = await asyncio.to_thread(lambda: httpx.post(
             f"{sb_url}/rest/v1/profiles",
             headers={"apikey": key, "Authorization": f"Bearer {key}",
                      "Content-Type": "application/json",
                      "Prefer": "resolution=merge-duplicates,return=minimal"},
             json=payload,
             timeout=10.0,
-        )
+        ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"profile save failed: {exc}")
@@ -176,15 +177,17 @@ async def upload_profile_image(kind: str, request: Request) -> dict:
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="empty body")
+    if len(body) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="image too large")
     path = f"{user_id}/{kind}.jpg"
     try:
-        resp = httpx.post(
+        resp = await asyncio.to_thread(lambda: httpx.post(
             f"{sb_url}/storage/v1/object/profile-images/{path}",
             content=body,
             headers={"apikey": key, "Authorization": f"Bearer {key}",
                      "Content-Type": "image/jpeg", "x-upsert": "true"},
             timeout=10.0,
-        )
+        ))
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"image upload failed: {exc}")
