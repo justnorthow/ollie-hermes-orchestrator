@@ -169,8 +169,9 @@ def review(body: ReviewBody, request: Request):
             headers=_sb_headers(key), timeout=10.0,
         )
         resp.raise_for_status()
-    except httpx.HTTPError as exc:
-        return JSONResponse({"error": f"review failed: {exc}"}, status_code=502)
+    except httpx.HTTPError:
+        _logger.exception("compliance review failed")
+        return JSONResponse({"error": "upstream database error"}, status_code=502)
     return {"count": resp.json()}
 
 
@@ -197,8 +198,9 @@ def auto_approve(body: AutoApproveBody, request: Request):
             headers=_sb_headers(key), timeout=10.0,
         )
         resp.raise_for_status()
-    except httpx.HTTPError as exc:
-        return JSONResponse({"error": f"auto-approve failed: {exc}"}, status_code=502)
+    except httpx.HTTPError:
+        _logger.exception("compliance auto-approve failed")
+        return JSONResponse({"error": "upstream database error"}, status_code=502)
     return {"count": resp.json()}
 
 
@@ -226,8 +228,9 @@ def traiga_readiness(request: Request):
             json={"p_from": from_, "p_to": to}, headers=_sb_headers(key), timeout=10.0,
         )
         window_resp.raise_for_status()
-    except httpx.HTTPError as exc:
-        return JSONResponse({"error": f"readiness failed: {exc}"}, status_code=502)
+    except httpx.HTTPError:
+        _logger.exception("traiga readiness failed")
+        return JSONResponse({"error": "upstream database error"}, status_code=502)
     # PostgREST returns count(*)::bigint as a JSON string on these boxes; coerce
     # to int here so the frontend (and the regulator-facing TRAIGA report) don't
     # do string math ("0"+"3") or string comparisons ("0"===0) on these counts.
