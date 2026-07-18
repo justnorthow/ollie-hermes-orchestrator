@@ -76,6 +76,46 @@ def test_dashboard_headers_empty_when_token_unset(monkeypatch):
     assert sessions._dashboard_headers() == {}
 
 
+def test_dashboard_get_scopes_request_to_agent_profile(monkeypatch):
+    """Hermes 0.18.2 unified the dashboards: `hermes -p <profile> dashboard`
+    re-execs as the DEFAULT profile's dashboard, which serves the default
+    profile's session DB unless ?profile=<name> is passed. Found 2026-07-18:
+    every pam session read 404'd after the 0.18.2 update because the proxy
+    hit the default profile's DB. Older per-profile dashboards ignore the
+    extra param, so sending it unconditionally is safe."""
+    monkeypatch.setenv("HERMES_DASHBOARD_URLS", json.dumps({"pam": "http://127.0.0.1:9122"}))
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        content = b"[]"
+
+    def fake_get(url, headers=None, timeout=None):
+        captured["url"] = url
+        return _Resp()
+
+    monkeypatch.setattr(sessions.httpx, "get", fake_get)
+    sessions._dashboard_get("pam", "/api/sessions/s-1/messages")
+    assert captured["url"] == "http://127.0.0.1:9122/api/sessions/s-1/messages?profile=pam"
+
+
+def test_dashboard_delete_scopes_request_to_agent_profile(monkeypatch):
+    monkeypatch.setenv("HERMES_DASHBOARD_URLS", json.dumps({"pam": "http://127.0.0.1:9122"}))
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        content = b"{}"
+
+    def fake_delete(url, headers=None, timeout=None):
+        captured["url"] = url
+        return _Resp()
+
+    monkeypatch.setattr(sessions.httpx, "delete", fake_delete)
+    sessions._dashboard_delete("pam", "/api/sessions/s-1")
+    assert captured["url"] == "http://127.0.0.1:9122/api/sessions/s-1?profile=pam"
+
+
 def test_list_returns_only_own_rows(client, monkeypatch):
     rows = [{"hermes_session_id": "s-1", "title": "Hi", "created_at": "2026-07-01T00:00:00Z",
              "last_active_at": "2026-07-02T00:00:00Z"}]

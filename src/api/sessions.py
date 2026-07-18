@@ -9,6 +9,7 @@ Ownership rows live in Supabase `agent_sessions`, written via the service role
 import json
 import logging
 import os
+import urllib.parse
 from datetime import datetime, timezone
 
 import httpx
@@ -235,15 +236,30 @@ def _dashboard_headers() -> dict:
     return {"X-Hermes-Session-Token": token} if token else {}
 
 
+def _profile_scoped(agent: str, path: str) -> str:
+    """Append ?profile=<agent> to a dashboard API path. Hermes 0.18.2 unified
+    the dashboards: `hermes -p <profile> dashboard` re-execs as the DEFAULT
+    profile's dashboard (`-p default --open-profile <profile>`), so every
+    per-profile dashboard in HERMES_DASHBOARD_URLS actually serves the default
+    profile's session DB unless the request names the profile explicitly
+    (2026-07-18: all pam session reads 404'd after the 0.18.2 update). Agent
+    ids are Hermes profile names by install convention, and pre-0.18.2
+    dashboards ignore the undeclared param, so always sending it is safe."""
+    sep = "&" if "?" in path else "?"
+    return f"{path}{sep}profile={urllib.parse.quote(agent)}"
+
+
 def _dashboard_get(agent: str, path: str) -> tuple[int, bytes]:
     base = _dashboard_base(agent)
-    resp = httpx.get(f"{base}{path}", headers=_dashboard_headers(), timeout=30.0)
+    resp = httpx.get(f"{base}{_profile_scoped(agent, path)}",
+                     headers=_dashboard_headers(), timeout=30.0)
     return resp.status_code, resp.content
 
 
 def _dashboard_delete(agent: str, path: str) -> tuple[int, bytes]:
     base = _dashboard_base(agent)
-    resp = httpx.delete(f"{base}{path}", headers=_dashboard_headers(), timeout=30.0)
+    resp = httpx.delete(f"{base}{_profile_scoped(agent, path)}",
+                        headers=_dashboard_headers(), timeout=30.0)
     return resp.status_code, resp.content
 
 
