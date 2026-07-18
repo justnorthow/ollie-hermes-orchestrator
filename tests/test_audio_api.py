@@ -1,4 +1,6 @@
 """Browser-facing STT/TTS endpoints (Ollie Voice v1). Engines mocked."""
+import threading
+import time
 import types
 
 import pytest
@@ -154,3 +156,76 @@ def test_transcribe_silence_returns_empty_text(ctx):
     r = c.post("/v1/audio/transcribe", content=b"quiet", headers=AUTH)
     assert r.status_code == 200
     assert r.json() == {"text": ""}
+
+
+def test_transcribe_timeout_is_504(ctx):
+    # The whisper thread can't be cancelled once started (asyncio.to_thread
+    # has no interrupt hook) — asyncio.wait_for just stops us waiting on it.
+    # Shrink the timeout via the extracted constant so a fake model that
+    # "hangs" past it trips the 504 deterministically and fast.
+    c, monkeypatch = ctx
+    monkeypatch.setattr(audio_mod, "_TRANSCRIBE_TIMEOUT_S", 0.05)
+
+    class _SlowModel:
+        def transcribe(self, f):
+            time.sleep(0.5)
+            return [_FakeSeg("late")], {"language": "en"}
+
+    monkeypatch.setattr(audio_mod, "_get_model", lambda: _SlowModel())
+    r = c.post("/v1/audio/transcribe", content=b"xx", headers=AUTH)
+    assert r.status_code == 504
+
+
+def test_transcribe_serializes_concurrent_requests(ctx):
+    # _transcribe_gate (asyncio.Semaphore(1)) must keep a second transcription
+    # from starting until the first finishes, even under real concurrency.
+    # Use `with c:` so both requests run on a single shared event loop/portal
+    # (the module-level semaphore isn't meaningfully shared across the
+    # separate portals TestClient spins up per call otherwise).
+    c, monkeypatch = ctx
+    lock = threading.Lock()
+    state = {"in_flight": 0, "max_in_flight": 0}
+    started = threading.Event()
+    release = threading.Event()
+
+    class _GatedModel:
+        def transcribe(self, f):
+            with lock:
+                state["in_flight"] += 1
+                state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
+            started.set()
+            release.wait(timeout=5)
+            with lock:
+                state["in_flight"] -= 1
+            return [_FakeSeg("ok")], {"language": "en"}
+
+    monkeypatch.setattr(audio_mod, "_get_model", lambda: _GatedModel())
+
+    results = []
+
+    def worker():
+        r = c.post("/v1/audio/transcribe", content=b"xx", headers=AUTH)
+        results.append(r.status_code)
+
+    with c:
+        t1 = threading.Thread(target=worker)
+        t1.start()
+        assert started.wait(timeout=5)
+        started.clear()
+
+        t2 = threading.Thread(target=worker)
+        t2.start()
+        # Give the second request a moment to (wrongly) sneak past the gate;
+        # it must still be waiting, never having reached transcribe().
+        time.sleep(0.3)
+        assert not started.is_set()
+        with lock:
+            assert state["max_in_flight"] == 1
+
+        release.set()
+        t1.join(timeout=5)
+        assert started.wait(timeout=5)  # second request now proceeds
+        t2.join(timeout=5)
+
+    assert results == [200, 200]
+    assert state["max_in_flight"] == 1

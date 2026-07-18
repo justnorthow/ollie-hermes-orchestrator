@@ -27,6 +27,13 @@ router = APIRouter(prefix="/v1/audio", tags=["audio"], dependencies=[Depends(req
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024
 _MAX_SPEAK_CHARS = 5000
 _FALLBACK_VOICE = "en-US-AndrewMultilingualNeural"
+# Deliberately generous: exceeds the first-request model-download window (the
+# lazy singleton in _get_model downloads on first use). The whisper thread
+# can't be cancelled once started (asyncio.to_thread has no way to interrupt
+# a blocking call), so a timeout here only stops us from waiting on it
+# forever — the thread keeps running until it finishes. That's why the log
+# on timeout must be loud: it's the only signal an orphaned thread exists.
+_TRANSCRIBE_TIMEOUT_S = 300.0
 
 # Interactive endpoints; the bucket is an abuse backstop, not a quota.
 _bucket = TokenBucket(rate_per_min=30)
@@ -133,7 +140,16 @@ async def transcribe(request: Request) -> dict:
             _logger.exception("whisper model load failed")
             raise HTTPException(status_code=502, detail="transcription engine unavailable")
         try:
-            text = await asyncio.to_thread(_transcribe_with, model, body)
+            text = await asyncio.wait_for(
+                asyncio.to_thread(_transcribe_with, model, body),
+                timeout=_TRANSCRIBE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            _logger.error(
+                "transcription timed out after %ss — whisper thread may still be running",
+                _TRANSCRIBE_TIMEOUT_S,
+            )
+            raise HTTPException(status_code=504, detail="transcription timed out")
         except Exception as exc:
             _logger.warning("transcription failed: %s", exc, exc_info=True)
             raise HTTPException(status_code=400, detail="could not decode audio")
