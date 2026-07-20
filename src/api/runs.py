@@ -83,8 +83,24 @@ def _session_owner(agent: str, session_id: str) -> str | None:
     return _sessions_store.get_session_owner(agent, session_id)
 
 
-def _record_session(agent: str, session_id: str, user_id: str) -> None:
-    _sessions_store.record_session(agent, session_id, user_id)
+def _record_session(agent: str, session_id: str, user_id: str,
+                    title: str | None = None) -> None:
+    _sessions_store.record_session(agent, session_id, user_id, title=title)
+
+
+_TITLE_MAX = 60
+
+
+def _derive_title(text: str) -> str | None:
+    """Thread display title from the user's first prompt: whitespace collapsed,
+    truncated to _TITLE_MAX chars with an ellipsis. None when there's nothing
+    usable (the frontend then falls back to its generic label)."""
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return None
+    if len(collapsed) > _TITLE_MAX:
+        return collapsed[:_TITLE_MAX].rstrip() + "…"
+    return collapsed
 
 
 def _touch_session(agent: str, session_id: str) -> None:
@@ -315,7 +331,9 @@ async def create_run(agent: str, request: Request):
                     # for it the Phase-1 gate 403'd message 2 of every new
                     # chat. Idempotent insert; harmless if Hermes later names
                     # the session itself (the stream capture records that id).
-                    _record_session(agent, run_id, user_id)
+                    # This row IS the thread, so stamp its display title from
+                    # the first prompt (the insert never overwrites).
+                    _record_session(agent, run_id, user_id, _derive_title(inp))
         except Exception:
             pass
     return Response(content=content, status_code=status, media_type="application/json")

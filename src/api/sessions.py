@@ -109,8 +109,13 @@ def get_session_owner(agent: str, session_id: str) -> str | None:
         return None
 
 
-def record_session(agent: str, session_id: str, user_id: str) -> None:
-    """Insert an ownership row if absent. Best-effort: never raises, never overwrites."""
+def record_session(agent: str, session_id: str, user_id: str,
+                   title: str | None = None) -> None:
+    """Insert an ownership row if absent. Best-effort: never raises, never overwrites.
+
+    `title` (the thread's display name, derived from the user's first prompt)
+    is only ever set on the initial insert — the ignore-duplicates conflict
+    handling means an existing row's title is never overwritten."""
     sb = _sb()
     if not sb:
         return
@@ -118,6 +123,8 @@ def record_session(agent: str, session_id: str, user_id: str) -> None:
     body = {"agent_id": agent, "hermes_session_id": session_id, "user_id": user_id}
     if _instance_id():
         body["instance_id"] = _instance_id()
+    if title:
+        body["title"] = title
     try:
         resp = httpx.post(
             f"{url}/rest/v1/agent_sessions",

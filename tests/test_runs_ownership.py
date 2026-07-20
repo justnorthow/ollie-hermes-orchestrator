@@ -71,7 +71,7 @@ def test_no_identity_skips_check(client, monkeypatch):
 def test_new_session_recorded_from_stream(client, monkeypatch):
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r7"}'))
     recorded = []
-    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u, t=None: recorded.append((a, s, u)))
     r = _post_run(client, user=USER_A)  # no session_id -> new session
     assert r.status_code == 200
     # create_run pre-claims the run id as a thread id (see the run-id-fallback
@@ -100,10 +100,36 @@ def test_new_session_recorded_from_stream(client, monkeypatch):
 def test_new_thread_run_id_preclaimed_at_create(client, monkeypatch):
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r7"}'))
     recorded = []
-    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u, t=None: recorded.append((a, s, u)))
     r = _post_run(client, user=USER_A)  # no session_id -> new thread
     assert r.status_code == 200
     assert recorded == [("real-estate", "r7", USER_A)]
+
+
+# --- session titles from the first prompt (2026-07-20) -----------------------
+# The agent_sessions.title column existed from Phase 1 but nothing ever wrote
+# it, so every thread rendered as "Session <id>…". The pre-claim insert (the
+# row that becomes the thread) now carries a title derived from the user's
+# first message.
+
+
+def test_new_thread_preclaim_carries_title_from_first_prompt(client, monkeypatch):
+    monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r7"}'))
+    recorded = []
+    monkeypatch.setattr(runs, "_record_session",
+                        lambda a, s, u, t=None: recorded.append((a, s, u, t)))
+    r = _post_run(client, user=USER_A)  # body input is "hello there"
+    assert r.status_code == 200
+    assert recorded == [("real-estate", "r7", USER_A, "hello there")]
+
+
+def test_derive_title_collapses_whitespace_and_truncates():
+    assert runs._derive_title("  Draft   the\nQ3   newsletter  ") == "Draft the Q3 newsletter"
+    long = "word " * 30
+    t = runs._derive_title(long)
+    assert t is not None and len(t) <= 61 and t.endswith("…")
+    assert runs._derive_title("   ") is None
+    assert runs._derive_title("") is None
 
 
 def test_continue_run_does_not_preclaim_run_id(client, monkeypatch):
@@ -112,7 +138,7 @@ def test_continue_run_does_not_preclaim_run_id(client, monkeypatch):
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r8"}'))
     monkeypatch.setattr(runs, "_session_owner", lambda a, s: USER_A)
     recorded = []
-    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u, t=None: recorded.append((a, s, u)))
     r = _post_run(client, session_id="s-1", user=USER_A)
     assert r.status_code == 200
     assert recorded == []
@@ -121,7 +147,7 @@ def test_continue_run_does_not_preclaim_run_id(client, monkeypatch):
 def test_identity_less_run_not_preclaimed(client, monkeypatch):
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r9"}'))
     recorded = []
-    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u, t=None: recorded.append((a, s, u)))
     r = _post_run(client, user=None)
     assert r.status_code == 200
     assert recorded == []
@@ -130,7 +156,7 @@ def test_identity_less_run_not_preclaimed(client, monkeypatch):
 def test_failed_create_not_preclaimed(client, monkeypatch):
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (502, b'{"detail":"upstream down"}'))
     recorded = []
-    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u, t=None: recorded.append((a, s, u)))
     r = _post_run(client, user=USER_A)
     assert r.status_code == 502
     assert recorded == []
@@ -227,7 +253,7 @@ def test_large_run_completed_frame_still_captures_session(client, monkeypatch):
     JSON and silently strand the session (creator's next message 403s)."""
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r-big"}'))
     recorded = []
-    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u, t=None: recorded.append((a, s, u)))
     r = _post_run(client, user=USER_A)
     assert r.status_code == 200
 
@@ -267,7 +293,7 @@ def test_session_captured_before_client_disconnect_drains_stream(client, monkeyp
     monkeypatch.setenv("HERMES_GATEWAY_URL", "http://gw")
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r-disc"}'))
     recorded = []
-    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u, t=None: recorded.append((a, s, u)))
     runs._RUN_OWNERS["r-disc"] = USER_A
 
     frame1 = b'data: {"event":"message.delta","delta":"hi"}\n\n'
@@ -342,7 +368,7 @@ def test_governed_path_records_at_most_once_and_bytes_unchanged(client, monkeypa
     still records at most once and does not alter delivered bytes."""
     monkeypatch.setattr(runs, "_create_run", lambda a, b: (200, b'{"run_id":"r-gov"}'))
     recorded = []
-    monkeypatch.setattr(runs, "_record_session", lambda a, s, u: recorded.append((a, s, u)))
+    monkeypatch.setattr(runs, "_record_session", lambda a, s, u, t=None: recorded.append((a, s, u)))
     r = _post_run(client, user=USER_A)
     assert r.status_code == 200
 

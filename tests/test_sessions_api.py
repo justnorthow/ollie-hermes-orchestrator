@@ -443,6 +443,26 @@ def test_record_session_omits_instance_id_when_unset(monkeypatch):
     assert "instance_id" not in calls[0]
 
 
+def test_record_session_includes_title_when_given(monkeypatch):
+    _sb_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "post",
+                        lambda url, params=None, headers=None, json=None, timeout=None:
+                        calls.append(json) or _JsonResp(status_code=201))
+    sessions.record_session("real-estate", "s-1", USER_A, title="Draft the Q3 newsletter")
+    assert calls[0]["title"] == "Draft the Q3 newsletter"
+
+
+def test_record_session_omits_title_when_none(monkeypatch):
+    _sb_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(sessions.httpx, "post",
+                        lambda url, params=None, headers=None, json=None, timeout=None:
+                        calls.append(json) or _JsonResp(status_code=201))
+    sessions.record_session("real-estate", "s-1", USER_A)
+    assert "title" not in calls[0]
+
+
 def test_list_user_rows_scopes_to_instance(monkeypatch):
     _sb_env(monkeypatch)
     monkeypatch.setenv("INSTANCE_ID", "sandbox")
