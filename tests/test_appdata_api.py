@@ -65,3 +65,63 @@ def test_get_appdata_traversal_key_400(client, cfg):
     # Use URL-encoded %2E%2E to prevent TestClient from normalizing the path
     assert client.get("/v1/agents/prospecting-expert/appdata/%2E%2E/secrets").status_code == 400
     assert client.get("/v1/agents/prospecting-expert/appdata/Bad_Key").status_code == 400
+
+
+def read_seeded(cfg, key: str) -> dict:
+    path = cfg.hermes_profiles_dir / "prospecting-expert" / "workspace" / "appdata" / f"{key}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+CANDS = {
+    "version": 3,
+    "status": "in_review",
+    "candidates": [
+        {"id": "a1", "bucket": "grey", "decision": "pending"},
+        {"id": "a2", "bucket": "green"},
+    ],
+}
+
+
+def test_patch_appdata_applies_pointer_updates_and_bumps_version(client, cfg):
+    seed(cfg, "prospecting/candidates", CANDS)
+    r = client.patch(
+        "/v1/agents/prospecting-expert/appdata/prospecting/candidates",
+        json={"baseVersion": 3, "updates": [
+            {"pointer": "/candidates/0/decision", "value": "keep"},
+            {"pointer": "/status", "value": "final"},
+        ]},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"version": 4}
+    doc = read_seeded(cfg, "prospecting/candidates")
+    assert doc["candidates"][0]["decision"] == "keep"
+    assert doc["status"] == "final"
+    assert doc["version"] == 4
+
+
+def test_patch_appdata_stale_version_409(client, cfg):
+    seed(cfg, "prospecting/candidates", CANDS)
+    r = client.patch(
+        "/v1/agents/prospecting-expert/appdata/prospecting/candidates",
+        json={"baseVersion": 2, "updates": [{"pointer": "/status", "value": "final"}]},
+    )
+    assert r.status_code == 409
+    assert read_seeded(cfg, "prospecting/candidates")["version"] == 3  # untouched
+
+
+def test_patch_appdata_bad_pointer_400_leaves_file_untouched(client, cfg):
+    seed(cfg, "prospecting/candidates", CANDS)
+    r = client.patch(
+        "/v1/agents/prospecting-expert/appdata/prospecting/candidates",
+        json={"baseVersion": 3, "updates": [{"pointer": "/candidates/99/decision", "value": "keep"}]},
+    )
+    assert r.status_code == 400
+    assert read_seeded(cfg, "prospecting/candidates") == CANDS
+
+
+def test_patch_appdata_missing_file_404(client):
+    r = client.patch(
+        "/v1/agents/prospecting-expert/appdata/prospecting/candidates",
+        json={"baseVersion": 1, "updates": [{"pointer": "/status", "value": "final"}]},
+    )
+    assert r.status_code == 404
