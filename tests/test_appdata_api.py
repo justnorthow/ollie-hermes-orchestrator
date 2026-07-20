@@ -125,3 +125,27 @@ def test_patch_appdata_missing_file_404(client):
         json={"baseVersion": 1, "updates": [{"pointer": "/status", "value": "final"}]},
     )
     assert r.status_code == 404
+
+
+def test_patch_appdata_partial_failure_discards_all_updates(client, cfg):
+    seed(cfg, "prospecting/candidates", CANDS)
+    r = client.patch(
+        "/v1/agents/prospecting-expert/appdata/prospecting/candidates",
+        json={"baseVersion": 3, "updates": [
+            {"pointer": "/candidates/0/decision", "value": "keep"},
+            {"pointer": "/candidates/99/decision", "value": "keep"},
+        ]},
+    )
+    assert r.status_code == 400
+    assert read_seeded(cfg, "prospecting/candidates") == CANDS
+
+
+def test_patch_appdata_noncanonical_list_index_400(client, cfg):
+    seed(cfg, "prospecting/candidates", CANDS)
+    for bad in ["/candidates/-1/decision", "/candidates/00/decision"]:
+        r = client.patch(
+            "/v1/agents/prospecting-expert/appdata/prospecting/candidates",
+            json={"baseVersion": 3, "updates": [{"pointer": bad, "value": "keep"}]},
+        )
+        assert r.status_code == 400, bad
+    assert read_seeded(cfg, "prospecting/candidates") == CANDS

@@ -27,6 +27,15 @@ router = APIRouter(
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9/-]*$")
 
 
+def _list_index(token: str) -> int:
+    """Convert RFC 6901 array reference-token to list index. Rejects non-canonical
+    forms: negative indices (e.g. '-1'), leading zeros (e.g. '00', '01'). Raises
+    ValueError if token is invalid."""
+    if token != "0" and (not token.isdigit() or token.startswith("0")):
+        raise ValueError(token)
+    return int(token)
+
+
 def _require_agent(agent_id: str, cfg: Config) -> None:
     entries = read_agents(cfg.hermes_stack_dir / ".env")
     if not any(e.id == agent_id for e in entries):
@@ -67,10 +76,10 @@ def _apply_pointer(doc: dict, pointer: str, value: object) -> None:
     target: object = doc
     try:
         for part in parts[:-1]:
-            target = target[int(part)] if isinstance(target, list) else target[part]
+            target = target[_list_index(part)] if isinstance(target, list) else target[part]
         last = parts[-1]
         if isinstance(target, list):
-            target[int(last)] = value  # index must exist — no appends via PATCH
+            target[_list_index(last)] = value  # index must exist — no appends via PATCH
         elif isinstance(target, dict):
             target[last] = value
         else:
