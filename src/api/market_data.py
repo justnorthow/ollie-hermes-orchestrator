@@ -182,3 +182,22 @@ def get_market_data(request: Request, type: str = "", value: str = ""):
 
     return JSONResponse(content=build_response(region_type, value, row, rate),
                         headers={"Cache-Control": "no-store"})
+
+
+@router.get("/v1/rates")
+def get_rates(request: Request):
+    """FRED 30-yr rate only — for Newsletter Studio MLS mode, where local
+    figures come from an uploaded dataset but rates still come from FRED."""
+    email = request.headers.get("X-Auth-Email", "").strip()
+    if not email:
+        return JSONResponse({"detail": "No authenticated user"}, status_code=401)
+    out = {"rate30yr": "", "rateMovement": ""}
+    fred_key = os.environ.get("FRED_API_KEY", "").strip()
+    if fred_key:
+        try:
+            rate = _fetch_rate(fred_key) or {}
+            out["rate30yr"] = rate.get("rate30yr", "")
+            out["rateMovement"] = rate.get("rateMovement", "")
+        except Exception:
+            _logger.exception("FRED rate fetch failed")
+    return JSONResponse(content=out, headers={"Cache-Control": "no-store"})

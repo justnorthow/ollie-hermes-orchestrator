@@ -11,6 +11,7 @@ from src.api import sso as sso_router
 from src.api.auth_validate import router as auth_validate_router
 from src.api.profile import router as profile_router
 from src.api.market_data import router as market_data_router
+from src.api.market_datasets import router as market_datasets_router
 from src.api.runs import router as runs_router
 from src.api.sessions import router as sessions_router
 from src.api.admin import router as admin_router
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_validate_router)
     app.include_router(profile_router)
     app.include_router(market_data_router)
+    app.include_router(market_datasets_router)
     app.include_router(runs_router)
     app.include_router(sessions_router)
     app.include_router(admin_router)
