@@ -3,8 +3,10 @@
 Parse and save are deliberately separate routes: the model produces a DRAFT the
 browser shows for confirmation, and only user-confirmed values are ever stored.
 All Supabase access is service-role PostgREST (mirrors market_data.py)."""
+import asyncio
 import logging
 import os
+import re
 import uuid
 
 import httpx
@@ -82,7 +84,8 @@ async def parse_upload(request: Request, filename: str = "", agent: str = "real-
     last_err = "parse failed"
     for _ in range(2):                       # one retry on junk output
         try:
-            text = call_gateway_parse(content, entry.gateway_port, gateway_key)
+            text = await asyncio.to_thread(call_gateway_parse, content,
+                                            entry.gateway_port, gateway_key)
             return JSONResponse(content=validate_parse_output(text),
                                 headers={"Cache-Control": "no-store"})
         except ValueError as exc:            # model returned non-JSON — retry
@@ -121,20 +124,32 @@ def save_dataset(body: SaveDataset, request: Request):
     file_path = None
     if body.file_b64 and body.file_name:
         import base64
-        file_path = f"{ds_id}/{body.file_name}"
-        try:
-            resp = httpx.post(
-                f"{url}/storage/v1/object/market-uploads/{file_path}",
-                content=base64.b64decode(body.file_b64),
-                headers={"apikey": key, "Authorization": f"Bearer {key}",
-                         "Content-Type": "application/octet-stream", "x-upsert": "true"},
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-        except (httpx.HTTPError, ValueError):
-            _logger.warning("market-dataset file upload failed; saving without file",
-                            exc_info=True)
-            file_path = None                 # dataset still saves; provenance file is best-effort
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(body.file_name))[-100:]
+        if safe_name.strip("_."):
+            try:
+                file_bytes = base64.b64decode(body.file_b64)
+            except ValueError:
+                _logger.warning("market-dataset file upload failed; saving without file",
+                                exc_info=True)
+                file_bytes = None
+            if file_bytes is not None:
+                if len(file_bytes) > MAX_UPLOAD_BYTES:
+                    return JSONResponse({"detail": "file too large (10 MB max)"},
+                                        status_code=413)
+                file_path = f"{ds_id}/{safe_name}"
+                try:
+                    resp = httpx.post(
+                        f"{url}/storage/v1/object/market-uploads/{file_path}",
+                        content=file_bytes,
+                        headers={"apikey": key, "Authorization": f"Bearer {key}",
+                                 "Content-Type": "application/octet-stream", "x-upsert": "true"},
+                        timeout=30.0,
+                    )
+                    resp.raise_for_status()
+                except httpx.HTTPError:
+                    _logger.warning("market-dataset file upload failed; saving without file",
+                                    exc_info=True)
+                    file_path = None          # dataset still saves; provenance file is best-effort
 
     figures = {k: str(body.figures.get(k, "")).strip()
                for k in ("medianSoldPrice", "inventoryMonths", "daysOnMarket", "salesVolume")}

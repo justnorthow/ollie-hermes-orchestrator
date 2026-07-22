@@ -1,3 +1,4 @@
+import base64
 import json
 import pytest
 from fastapi import FastAPI
@@ -98,6 +99,46 @@ def test_save_inserts_confirmed_values(client, monkeypatch):
     assert r.json()["ok"] is True
     assert captured["json"]["uploaded_by"] == UID          # identity from header, not body
     assert "/rest/v1/market_datasets" in captured["url"]
+
+
+def test_save_sanitizes_file_name(client, monkeypatch):
+    calls = []
+    def fake_post(url, **kw):
+        calls.append(url)
+        class R:
+            status_code = 201
+            def raise_for_status(self): pass
+        return R()
+    monkeypatch.setattr("src.api.market_datasets.httpx.post", fake_post)
+    body = {"label": "Teravista", "period_label": "June 2026",
+            "period_end": "2026-06-30", "linked_area": None,
+            "figures": DRAFT["figures"], "source_label": DRAFT["source_label"],
+            "file_b64": base64.b64encode(b"hello world").decode("ascii"),
+            "file_name": "../../evil?x=1.pdf"}
+    r = client.post("/v1/market-datasets", json=body, headers=AUTH)
+    assert r.status_code == 200
+    storage_url = next(u for u in calls if "/storage/v1/object/market-uploads/" in u)
+    object_path = storage_url.split("/storage/v1/object/market-uploads/", 1)[1]
+    # object_path is "<ds_id>/<safe_name>" -- the segment after the uuid must
+    # be free of path traversal / query-injection characters.
+    ds_id, _, safe_name = object_path.partition("/")
+    assert "/" not in safe_name
+    assert "?" not in safe_name
+    assert ".." not in safe_name
+
+
+def test_save_rejects_oversize_file(client, monkeypatch):
+    def fake_post(url, **kw):
+        raise AssertionError("should not reach storage or db post for oversize file")
+    monkeypatch.setattr("src.api.market_datasets.httpx.post", fake_post)
+    oversize = b"x" * (10 * 1024 * 1024 + 1)
+    body = {"label": "Teravista", "period_label": "June 2026",
+            "period_end": "2026-06-30", "linked_area": None,
+            "figures": DRAFT["figures"], "source_label": DRAFT["source_label"],
+            "file_b64": base64.b64encode(oversize).decode("ascii"),
+            "file_name": "stats.csv"}
+    r = client.post("/v1/market-datasets", json=body, headers=AUTH)
+    assert r.status_code == 413
 
 
 def test_list_returns_datasets(client, monkeypatch):
