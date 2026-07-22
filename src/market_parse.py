@@ -7,14 +7,11 @@ from __future__ import annotations
 import base64
 import io
 import json
-import logging
 import re
 from datetime import date
 
 import httpx
 from pypdf import PdfReader
-
-_logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
@@ -104,12 +101,19 @@ def validate_parse_output(text: str) -> dict:
     if not isinstance(obj, dict):
         raise ValueError("model did not return a JSON object")
 
-    warnings = [str(w) for w in obj.get("warnings", []) if isinstance(w, (str, int, float))]
+    raw_warnings = obj.get("warnings")
+    raw_warnings = raw_warnings if isinstance(raw_warnings, list) else []
+    warnings = [str(w) for w in raw_warnings if isinstance(w, (str, int, float))]
     raw_figures = obj.get("figures") if isinstance(obj.get("figures"), dict) else {}
     figures: dict = {}
     for k in _FIGURE_KEYS:
         v = raw_figures.get(k)
-        figures[k] = v.strip() if isinstance(v, str) else ""
+        if isinstance(v, str):
+            figures[k] = v.strip()
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            figures[k] = str(v)
+        else:
+            figures[k] = ""
         if not figures[k] and not any(k in w for w in warnings):
             warnings.append(f"{k}: not found in the document")
 

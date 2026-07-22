@@ -64,3 +64,30 @@ def test_validate_rejects_bad_period_end():
 def test_validate_raises_on_garbage():
     with pytest.raises(ValueError):
         validate_parse_output("I could not find any data, sorry!")
+
+
+def test_validate_tolerates_null_warnings():
+    payload = {
+        "label": "TestArea", "period_label": "June 2026",
+        "figures": {"medianSoldPrice": "$500,000", "inventoryMonths": "2.5",
+                    "daysOnMarket": "30", "salesVolume": "100"},
+        "warnings": None,
+    }
+    text = json.dumps(payload)
+    draft = validate_parse_output(text)
+    assert isinstance(draft["warnings"], list)
+    assert len(draft["warnings"]) == 0
+
+
+def test_validate_coerces_numeric_figure():
+    payload = {
+        "label": "TestArea", "period_label": "June 2026",
+        "figures": {"medianSoldPrice": 450000, "inventoryMonths": 3.1,
+                    "daysOnMarket": "42 days", "salesVolume": "87 closed sales"},
+    }
+    text = json.dumps(payload)
+    draft = validate_parse_output(text)
+    assert draft["figures"]["medianSoldPrice"] == "450000"
+    assert draft["figures"]["inventoryMonths"] == "3.1"
+    assert not any("medianSoldPrice" in w for w in draft["warnings"])
+    assert not any("inventoryMonths" in w for w in draft["warnings"])
