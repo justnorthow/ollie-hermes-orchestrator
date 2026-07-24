@@ -194,7 +194,10 @@ def create_user(body: CreateUserBody, request: Request):
     else:
         link = _generate_link("invite", email)     # creates the user + returns link
 
-    user_id = link.get("user", {}).get("id") or (existing or {}).get("id")
+    # GoTrue's admin/generate_link returns the User fields at the TOP LEVEL
+    # (id, email, ... alongside action_link/hashed_token) — there is no nested
+    # "user" object. Read the top-level id; fall back to a pre-found existing user.
+    user_id = link.get("id") or (existing or {}).get("id")
     if not user_id:
         return JSONResponse({"detail": "could not resolve user id"}, status_code=502)
 

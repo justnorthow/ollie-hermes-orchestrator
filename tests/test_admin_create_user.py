@@ -74,7 +74,7 @@ def test_create_user_new_invites_and_provisions(client, monkeypatch):
     post_calls = []
     monkeypatch.setattr(admin.httpx, "post", _fake_post(
         post_calls,
-        link_payload={"user": {"id": "u-new"}, "action_link": "https://site/invite#t=abc"},
+        link_payload={"id": "u-new", "action_link": "https://site/invite#t=abc"},
     ))
     seen = {}
     monkeypatch.setattr(roles, "set_tier",
@@ -131,7 +131,7 @@ def test_create_user_exists_but_unconfigured_reprovisions(client, monkeypatch):
     post_calls = []
     monkeypatch.setattr(admin.httpx, "post", _fake_post(
         post_calls,
-        link_payload={"user": {"id": "u-exist"}, "action_link": "https://site/invite#t=zzz"},
+        link_payload={"id": "u-exist", "action_link": "https://site/invite#t=zzz"},
     ))
     seen = {}
     monkeypatch.setattr(roles, "set_tier",
