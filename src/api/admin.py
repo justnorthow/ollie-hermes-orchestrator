@@ -174,8 +174,6 @@ def create_user(body: CreateUserBody, request: Request):
     if not roles.is_at_least(caller_tier, "platform_operator"):
         if roles.is_at_least(body.tier, caller_tier):
             return _FORBIDDEN
-    if body.tier == "platform_operator" and not roles.is_at_least(caller_tier, "platform_operator"):
-        return _FORBIDDEN
     if not (os.environ.get("SUPABASE_URL", "").strip() and
             os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()):
         return JSONResponse({"detail": "Supabase auth not configured on this instance"}, status_code=400)
