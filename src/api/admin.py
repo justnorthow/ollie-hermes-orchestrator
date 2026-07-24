@@ -118,6 +118,96 @@ def set_user_role(user_id: str, body: RoleBody, request: Request):
     return {"userId": user_id, "tier": body.tier}
 
 
+class CreateUserBody(BaseModel):
+    email: str
+    tier: str
+    tags: list[str] = []
+    governanceView: bool = False
+
+
+def _find_auth_user_by_email(email: str) -> dict | None:
+    """Return the Supabase auth user dict for email, or None. Service role."""
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not (url and key):
+        return None
+    resp = httpx.get(f"{url}/auth/v1/admin/users",
+                     params={"per_page": 200},
+                     headers={"apikey": key, "Authorization": f"Bearer {key}"}, timeout=10.0)
+    resp.raise_for_status()
+    data = resp.json()
+    users = data.get("users", data if isinstance(data, list) else [])
+    el = email.strip().lower()
+    for u in users:
+        if (u.get("email") or "").strip().lower() == el:
+            return u
+    return None
+
+
+def _generate_link(link_type: str, email: str) -> dict:
+    """POST admin/generate_link; returns {"user": {...}, "action_link": ...}.
+    Returns the link in the response WITHOUT sending email (SMTP is off)."""
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    body = {"type": link_type, "email": email}
+    site = os.environ.get("SITE_URL", "").strip().rstrip("/")
+    if site:
+        body["redirect_to"] = f"{site}/invite"
+    resp = httpx.post(f"{url}/auth/v1/admin/generate_link",
+                      headers={"apikey": key, "Authorization": f"Bearer {key}",
+                               "Content-Type": "application/json"},
+                      json=body, timeout=10.0)
+    resp.raise_for_status()
+    return resp.json()
+
+
+@router.post("/v1/admin/users")
+def create_user(body: CreateUserBody, request: Request):
+    caller, deny = _require_admin(request)
+    if deny:
+        return deny
+    caller_uid, caller_tier = caller
+    cfg = _cfg(request)
+    if body.tier not in roles.TIERS:
+        return JSONResponse({"detail": "invalid tier"}, status_code=422)
+    # Tier guard, identical to set_user_role: non-operators cannot mint at/above self.
+    if not roles.is_at_least(caller_tier, "platform_operator"):
+        if roles.is_at_least(body.tier, caller_tier):
+            return _FORBIDDEN
+    if body.tier == "platform_operator" and not roles.is_at_least(caller_tier, "platform_operator"):
+        return _FORBIDDEN
+    if not (os.environ.get("SUPABASE_URL", "").strip() and
+            os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()):
+        return JSONResponse({"detail": "Supabase auth not configured on this instance"}, status_code=400)
+
+    email = body.email.strip()
+    if not email or "@" not in email:
+        return JSONResponse({"detail": "invalid email"}, status_code=422)
+
+    existing = _find_auth_user_by_email(email)
+    if existing is not None:
+        # "Configured on this instance" == a user_roles row exists for this uid.
+        configured = existing["id"] in roles.list_roles(cfg.instance_id)
+        if configured:
+            return JSONResponse(
+                {"detail": "User already exists on this instance — edit them in the table instead."},
+                status_code=409)
+        link = _generate_link("magiclink", email)  # user exists → magiclink, not invite
+    else:
+        link = _generate_link("invite", email)     # creates the user + returns link
+
+    user_id = link.get("user", {}).get("id") or (existing or {}).get("id")
+    if not user_id:
+        return JSONResponse({"detail": "could not resolve user id"}, status_code=502)
+
+    roles.set_tier(cfg.instance_id, user_id, body.tier, caller_uid)
+    if body.governanceView:
+        roles.set_governance_view(cfg.instance_id, user_id, True)
+    roles.set_user_tags(user_id, body.tags)
+    _emit_admin_event(request, "user.invited", email, body.tier, caller_uid, caller_tier)
+    return {"userId": user_id, "email": email, "inviteLink": link.get("action_link", "")}
+
+
 class GovernanceViewBody(BaseModel):
     enabled: bool
 
