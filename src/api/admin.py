@@ -216,6 +216,51 @@ def create_user(body: CreateUserBody, request: Request):
             "verificationType": link.get("verification_type") or "invite"}
 
 
+def _delete_auth_user(user_id: str) -> int:
+    """DELETE the Supabase auth identity; return the HTTP status. Service role."""
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    resp = httpx.delete(f"{url}/auth/v1/admin/users/{user_id}",
+                        headers={"apikey": key, "Authorization": f"Bearer {key}"}, timeout=10.0)
+    return resp.status_code
+
+
+@router.delete("/v1/admin/users/{user_id}")
+def delete_user(user_id: str, request: Request):
+    caller, deny = _require_admin(request)
+    if deny:
+        return deny
+    caller_uid, caller_tier = caller
+    cfg = _cfg(request)
+    # Self-delete guard.
+    if user_id == caller_uid:
+        return JSONResponse({"detail": "You can't delete your own account"}, status_code=403)
+    if not (os.environ.get("SUPABASE_URL", "").strip() and
+            os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()):
+        return JSONResponse({"detail": "Supabase auth not configured on this instance"}, status_code=400)
+
+    role_map = roles.list_roles(cfg.instance_id)
+    target_tier = role_map.get(user_id, "member")
+    # Tier ceiling (Ollie only): a non-operator can't delete at/above their own tier.
+    if not roles.is_at_least(caller_tier, "platform_operator"):
+        if roles.is_at_least(target_tier, caller_tier):
+            return _FORBIDDEN
+    # Last-admin guard: if the target is admin+, at least one other admin+ must remain.
+    if roles.is_at_least(target_tier, "account_admin"):
+        others = [u for u, t in role_map.items()
+                  if u != user_id and roles.is_at_least(t, "account_admin")]
+        if not others:
+            return JSONResponse(
+                {"detail": "Can't delete the last admin on this instance"}, status_code=409)
+
+    roles.delete_user_rows(cfg.instance_id, user_id)
+    status = _delete_auth_user(user_id)
+    if status == 404:
+        return JSONResponse({"detail": "user not found"}, status_code=404)
+    _emit_admin_event(request, "user.deleted", user_id, target_tier, caller_uid, caller_tier)
+    return {"userId": user_id, "deleted": True}
+
+
 class GovernanceViewBody(BaseModel):
     enabled: bool
 

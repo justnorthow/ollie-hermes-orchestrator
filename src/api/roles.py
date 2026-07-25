@@ -287,6 +287,26 @@ def invalidate_tags(user_id: str | None = None) -> None:
         _tags_cache.pop(user_id, None)
 
 
+def delete_user_rows(instance_id: str, user_id: str) -> None:
+    """Remove a user's instance role row + all their global tags. Service role."""
+    sb = _sb()
+    if not sb:
+        raise RuntimeError("Supabase not configured")
+    url, key = sb
+    httpx.delete(
+        f"{url}/rest/v1/user_roles",
+        params={"instance_id": f"eq.{instance_id}", "user_id": f"eq.{user_id}"},
+        headers=_sb_headers(key), timeout=10.0,
+    ).raise_for_status()
+    httpx.delete(
+        f"{url}/rest/v1/user_tags",
+        params={"user_id": f"eq.{user_id}"},
+        headers=_sb_headers(key), timeout=10.0,
+    ).raise_for_status()
+    invalidate_cache(user_id)
+    invalidate_tags(user_id)
+
+
 def set_user_tags(user_id: str, tags: list[str]) -> None:
     """Replace a user's global tags (delete-all + insert). Service role."""
     sb = _sb()
