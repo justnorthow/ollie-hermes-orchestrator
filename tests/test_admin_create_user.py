@@ -74,7 +74,7 @@ def test_create_user_new_invites_and_provisions(client, monkeypatch):
     post_calls = []
     monkeypatch.setattr(admin.httpx, "post", _fake_post(
         post_calls,
-        link_payload={"id": "u-new", "action_link": "https://site/invite#t=abc"},
+        link_payload={"id": "u-new", "hashed_token": "ht-abc", "verification_type": "invite"},
     ))
     seen = {}
     monkeypatch.setattr(roles, "set_tier",
@@ -90,7 +90,7 @@ def test_create_user_new_invites_and_provisions(client, monkeypatch):
 
     assert r.status_code == 200
     assert r.json() == {"userId": "u-new", "email": "new@brk.com",
-                        "inviteLink": "https://site/invite#t=abc"}
+                        "tokenHash": "ht-abc", "verificationType": "invite"}
     assert seen["tier"] == ("u-new", "manager")
     assert seen["tags"] == ("u-new", ["compliance"])
     assert seen["gov"] == ("u-new", True)
@@ -131,7 +131,7 @@ def test_create_user_exists_but_unconfigured_reprovisions(client, monkeypatch):
     post_calls = []
     monkeypatch.setattr(admin.httpx, "post", _fake_post(
         post_calls,
-        link_payload={"id": "u-exist", "action_link": "https://site/invite#t=zzz"},
+        link_payload={"id": "u-exist", "hashed_token": "ht-zzz", "verification_type": "magiclink"},
     ))
     seen = {}
     monkeypatch.setattr(roles, "set_tier",

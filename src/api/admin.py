@@ -206,7 +206,14 @@ def create_user(body: CreateUserBody, request: Request):
         roles.set_governance_view(cfg.instance_id, user_id, True)
     roles.set_user_tags(user_id, body.tags)
     _emit_admin_event(request, "user.invited", email, body.tier, caller_uid, caller_tier)
-    return {"userId": user_id, "email": email, "inviteLink": link.get("action_link", "")}
+    # Return the hashed_token + type (NOT GoTrue's action_link): the self-hosted
+    # GoTrue action_link points at {API_EXTERNAL_URL}/verify, which is missing the
+    # /auth/v1 prefix Kong routes under (→ "no Route matched"). The caller instead
+    # builds a link to the dashboard's /invite?token_hash=…&type=… route, where
+    # InviteAccept calls verifyOtp() through the correctly-configured Supabase client.
+    return {"userId": user_id, "email": email,
+            "tokenHash": link.get("hashed_token", ""),
+            "verificationType": link.get("verification_type") or "invite"}
 
 
 class GovernanceViewBody(BaseModel):
