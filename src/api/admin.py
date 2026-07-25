@@ -257,6 +257,8 @@ def delete_user(user_id: str, request: Request):
     status = _delete_auth_user(user_id)
     if status == 404:
         return JSONResponse({"detail": "user not found"}, status_code=404)
+    if status not in (200, 204):
+        return JSONResponse({"detail": "failed to delete auth user"}, status_code=502)
     _emit_admin_event(request, "user.deleted", user_id, target_tier, caller_uid, caller_tier)
     return {"userId": user_id, "deleted": True}
 

@@ -35,16 +35,29 @@ def test_delete_user_happy_path(client, monkeypatch):
                         lambda inst, uid: "platform_operator" if uid == ADMIN else "member")
     monkeypatch.setattr(roles, "list_roles",
                         lambda inst: {ADMIN: "platform_operator", MEMBER: "member"})
-    seen = {}
+    calls = []
     monkeypatch.setattr(roles, "delete_user_rows",
-                        lambda inst, uid: seen.update(rows=(inst, uid)))
+                        lambda inst, uid: calls.append("rows"))
     monkeypatch.setattr(admin, "_delete_auth_user",
-                        lambda uid: seen.update(auth=uid) or 200)
+                        lambda uid: calls.append("auth") or 200)
     r = client.delete(f"/v1/admin/users/{MEMBER}", headers={"X-Auth-User-Id": ADMIN})
     assert r.status_code == 200
     assert r.json() == {"userId": MEMBER, "deleted": True}
-    assert seen["rows"] == ("sandbox", MEMBER)
-    assert seen["auth"] == MEMBER  # auth delete attempted after the row delete
+    assert calls == ["rows", "auth"]  # role rows deleted before the auth identity
+
+
+def test_delete_user_auth_delete_failure_502(client, monkeypatch):
+    # role rows/tags are already gone (irreversible) but the auth delete errored
+    # (e.g. rotated key, 429, 500/503) -- must NOT report success or emit the event.
+    monkeypatch.setattr(roles, "resolve_tier",
+                        lambda inst, uid: "platform_operator" if uid == ADMIN else "member")
+    monkeypatch.setattr(roles, "list_roles", lambda inst: {ADMIN: "platform_operator"})
+    monkeypatch.setattr(roles, "delete_user_rows", lambda inst, uid: None)
+    monkeypatch.setattr(admin, "_delete_auth_user", lambda uid: 500)
+    monkeypatch.setattr(admin, "_emit_admin_event",
+                        lambda *a, **k: pytest.fail("must not emit success event on auth-delete failure"))
+    r = client.delete(f"/v1/admin/users/{MEMBER}", headers={"X-Auth-User-Id": ADMIN})
+    assert r.status_code == 502
 
 
 def test_delete_user_self_forbidden(client, monkeypatch):
