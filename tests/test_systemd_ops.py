@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from src.systemd_ops import install_gateway_service, install_dashboard_service, \
     stop_and_remove_service
 
@@ -48,6 +52,65 @@ def test_install_dashboard_service_start_limit_in_unit_section(fake_env):
     assert any(l.startswith("StartLimitBurst=") for l in unit_lines)
     assert any(l.startswith("StartLimitIntervalSec=") for l in unit_lines)
     assert not any(l.startswith("StartLimit") for l in service_lines)
+
+
+def test_install_dashboard_service_writes_session_token_dropin(fake_env, monkeypatch):
+    # Without this drop-in the per-profile dashboard mints a RANDOM session token
+    # at every start, while the orchestrator only ever sends its single
+    # HERMES_DASHBOARD_TOKEN. The DEFAULT unit gets a drop-in from
+    # scripts/lib/ensure-dashboard-token.sh at install time, but a UI-created
+    # agent's unit is written afterwards and never got one — so every management
+    # call for it (/env, /model/options, config, skills, cron) 401'd and the
+    # agent-settings form silently issued no PATCH. NOTE --insecure does NOT
+    # waive the token on a loopback bind. Live-hit on the Towns box 2026-07-27.
+    monkeypatch.setenv("HERMES_DASHBOARD_TOKEN", "s3cr3t-token")
+    install_dashboard_service("paige", port=9121)
+    conf = (fake_env["systemd"] / "hermes-dashboard-paige.service.d"
+            / "session-token.conf")
+    assert conf.is_file()
+    # Byte-exact against ensure-dashboard-token.sh and the check-box-config gate,
+    # which both compare with printf '[Service]\nEnvironment=...' — no trailing
+    # newline, LF only.
+    assert conf.read_bytes() == (
+        b"[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN=s3cr3t-token"
+    )
+
+
+def test_install_dashboard_service_omits_dropin_when_token_unset(fake_env, monkeypatch):
+    # Writing an empty value would pin the dashboard to a blank token, which is
+    # worse than the randomized one: skip the drop-in and leave today's
+    # behaviour untouched on boxes that never provisioned a token.
+    monkeypatch.delenv("HERMES_DASHBOARD_TOKEN", raising=False)
+    install_dashboard_service("paige", port=9121)
+    conf = (fake_env["systemd"] / "hermes-dashboard-paige.service.d"
+            / "session-token.conf")
+    assert not conf.exists()
+
+
+def test_install_dashboard_service_rejects_whitespace_token(fake_env, monkeypatch):
+    # systemd splits Environment= at whitespace, which would pin a silently
+    # truncated token — reproducing the same 401 the drop-in exists to prevent.
+    monkeypatch.setenv("HERMES_DASHBOARD_TOKEN", "tok with space")
+    with pytest.raises(ValueError):
+        install_dashboard_service("paige", port=9121)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+def test_session_token_dropin_not_world_readable(fake_env, monkeypatch):
+    monkeypatch.setenv("HERMES_DASHBOARD_TOKEN", "s3cr3t-token")
+    install_dashboard_service("paige", port=9121)
+    conf = (fake_env["systemd"] / "hermes-dashboard-paige.service.d"
+            / "session-token.conf")
+    assert conf.stat().st_mode & 0o077 == 0
+
+
+def test_stop_and_remove_service_removes_token_dropin(fake_env, monkeypatch):
+    # A deleted agent must not leave its secret behind for a later agent of the
+    # same name to inherit.
+    monkeypatch.setenv("HERMES_DASHBOARD_TOKEN", "s3cr3t-token")
+    install_dashboard_service("paige", port=9121)
+    stop_and_remove_service("hermes-dashboard-paige")
+    assert not (fake_env["systemd"] / "hermes-dashboard-paige.service.d").exists()
 
 
 def test_stop_and_remove_service_disables_and_unlinks(fake_env):

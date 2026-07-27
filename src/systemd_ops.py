@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 from src.config import Config
+from src.profile_ops import _require_single_line_env
 
 
 _DASHBOARD_UNIT_TEMPLATE = """\
@@ -59,10 +60,55 @@ def install_gateway_service(name: str) -> None:
     )
 
 
+def write_session_token_dropin(unit_name: str) -> bool:
+    """Pin this dashboard unit's Hermes session token via a `session-token.conf`
+    drop-in. Returns True if written, False when the box has no token.
+
+    Hermes requires its session token on sensitive /api routes whenever the
+    dashboard is bound to loopback — `--insecure` waives it only for
+    NON-loopback hosts (see sessions.py:_dashboard_headers). Without a pinned
+    token the dashboard mints a fresh random one on every start, while the
+    orchestrator only ever sends its single HERMES_DASHBOARD_TOKEN. The default
+    profile's unit gets a drop-in from scripts/lib/ensure-dashboard-token.sh at
+    install time, so `default` worked — but a UI-created agent's unit is written
+    AFTER that script ran and never got one, so every management call for it
+    (/env, /model/options, config, skills, cron) 401'd. The agent-settings form
+    could then neither read nor write a model and silently issued no PATCH.
+    Diagnosed live on the Towns box, 2026-07-27.
+
+    The content must stay byte-identical to ensure-dashboard-token.sh — both
+    that script and check-box-config.sh's done-done gate compare it exactly.
+    """
+    token = os.environ.get("HERMES_DASHBOARD_TOKEN", "").strip()
+    if not token:
+        # Leave today's behaviour alone rather than pin a blank token.
+        return False
+    _require_single_line_env("HERMES_DASHBOARD_SESSION_TOKEN", token)
+    if any(ch.isspace() for ch in token):
+        # systemd splits an Environment= value at whitespace, which would pin a
+        # silently truncated token — fail loudly instead of shipping that.
+        raise ValueError("HERMES_DASHBOARD_TOKEN must not contain whitespace")
+    dropdir = _systemd_dir() / f"{unit_name}.d"
+    dropdir.mkdir(parents=True, exist_ok=True)
+    conf = dropdir / "session-token.conf"
+    # No trailing newline, and LF regardless of host platform — the gate does an
+    # exact string comparison against printf '[Service]\nEnvironment=...'.
+    conf.write_text(
+        f"[Service]\nEnvironment=HERMES_DASHBOARD_SESSION_TOKEN={token}",
+        newline="\n",
+    )
+    if os.name == "posix":
+        os.chmod(conf, 0o600)
+    return True
+
+
 def install_dashboard_service(name: str, *, port: int) -> None:
-    unit_path = _systemd_dir() / f"hermes-dashboard-{name}.service"
+    unit_name = f"hermes-dashboard-{name}.service"
+    unit_path = _systemd_dir() / unit_name
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     unit_path.write_text(_DASHBOARD_UNIT_TEMPLATE.format(name=name, port=port))
+    # Before daemon-reload, so the unit starts with the token already pinned.
+    write_session_token_dropin(unit_name)
     _systemctl("daemon-reload")
     _systemctl("enable", "--now", f"hermes-dashboard-{name}")
 
@@ -80,6 +126,11 @@ def stop_and_remove_service(unit_name: str) -> None:
     unit_path = _systemd_dir() / f"{unit_name}.service"
     if unit_path.exists():
         unit_path.unlink()
+    # Drop the session-token drop-in with it, so a deleted agent leaves no
+    # orphaned secret behind for a later agent of the same name to inherit.
+    dropdir = _systemd_dir() / f"{unit_name}.service.d"
+    if dropdir.is_dir():
+        shutil.rmtree(dropdir, ignore_errors=True)
     try:
         _systemctl("daemon-reload")
     except subprocess.CalledProcessError:
