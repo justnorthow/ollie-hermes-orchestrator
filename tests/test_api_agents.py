@@ -1,4 +1,5 @@
 import json
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -431,6 +432,126 @@ def test_create_writes_an_audit_row(client, fake_env):
     the request task it never ran, so UI-created agents went unrecorded."""
     _create_tmp_agent(client)
     log = fake_env["home"] / ".local" / "state" / "ollie-orchestrator" / "audit.log"
+    rows = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    creates = [r for r in rows if r["op"] == "create" and r["agent_id"] == "tmp"]
+    assert len(creates) == 1
+    assert creates[0]["result"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_create_disconnect_after_done_still_bounces_and_audits(fake_env, monkeypatch):
+    """Reproduces the real race, not through TestClient (which always drains
+    the whole SSE body and never disconnects mid-stream) but by driving the
+    ASGI app directly with a hand-rolled receive/send pair.
+
+    This server runs Starlette 1.0.1, which advertises ASGI spec_version 2.3
+    (< 2.4) and so takes StreamingResponse's task-group path: an anyio task
+    group runs stream_response(send) and listen_for_disconnect(receive)
+    concurrently, and whichever finishes first cancels the other via
+    task_group.cancel_scope.cancel(). A real browser closes the create modal
+    the moment it sees "done" and may drop the connection while that very
+    chunk is still being written — so this test's fake send() sets a flag
+    the instant it receives the "done" chunk and then hangs forever (as a
+    broken/closed socket write effectively would), while the fake receive()
+    only resolves to http.disconnect once that flag is set. That guarantees
+    the cancellation strikes stream_response while it is suspended inside
+    `await send(...)` for the "done" chunk — never handing control back to
+    our stream() generator, which stays suspended at its `yield` and is
+    never resumed through ordinary iteration.
+
+    Two things must still hold under that cancellation:
+    1. bounce_state["needed"] must already be True by the time
+       self.background() runs — Starlette's StreamingResponse.__call__ runs
+       it unconditionally after the (cancelled) task group exits, disconnect
+       or not, so if bounce_state weren't set until the code after the loop,
+       it would silently return with needed=False.
+    2. The audit row must exist despite stream()'s generator never being
+       resumed through normal iteration. Nothing in this call chain closes
+       it explicitly: CPython's async-generator finalizer (registered on the
+       running loop by BaseEventLoop.run_forever, confirmed with
+       sys.get_asyncgen_hooks()) is what eventually calls aclose() on an
+       abandoned, unreferenced async generator, delivering GeneratorExit and
+       running stream()'s `finally`. That finalizer only *schedules* a task
+       rather than running synchronously inline, so this test forces the
+       collection deterministically (gc.collect() plus draining the loop)
+       instead of sleeping and hoping — this was verified empirically: the
+       audit row is absent immediately after app() returns and present once
+       the loop is drained, confirming the finally genuinely runs via
+       GeneratorExit rather than via ordinary fall-through completion.
+    """
+    import gc
+    import src.api.agents as agents_mod
+    from src.api.main import create_app
+
+    calls: list[str] = []
+    monkeypatch.setattr(agents_mod, "bounce_dashboard", lambda: calls.append("bounce"))
+
+    app = create_app()
+    body = json.dumps({"name": "tmp", "provider": "anthropic", "model": "m",
+                        "apiKey": "k", "enabledSkills": []}).encode()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},  # < 2.4: task-group path
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/v1/agents",
+        "raw_path": b"/v1/agents",
+        "query_string": b"",
+        "headers": [
+            (b"authorization", b"Bearer topsecret"),
+            (b"content-type", b"application/json"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+
+    body_sent = False
+    seen_done = anyio.Event()
+
+    async def receive():
+        nonlocal body_sent
+        if not body_sent:
+            body_sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        # listen_for_disconnect's next call: only resolve once the "done"
+        # chunk has actually been handed to send() — the same race as the
+        # browser closing the modal on "done" and the socket going away.
+        await seen_done.wait()
+        return {"type": "http.disconnect"}
+
+    sent_messages = []
+
+    async def send(message):
+        sent_messages.append(message)
+        if message.get("type") == "http.response.body" and b"event: done" in message.get("body", b""):
+            seen_done.set()
+            # A broken/closed socket write never returns; hang here so the
+            # cancellation strikes exactly inside this await, matching the
+            # real race rather than a send that completes cleanly first.
+            await anyio.sleep_forever()
+
+    # Bounded so a regression that makes this hang (e.g. the cancellation
+    # never landing) fails the test instead of the suite.
+    with anyio.fail_after(10):
+        await app(scope, receive, send)
+
+    assert any(m.get("type") == "http.response.start" and m.get("status") == 202
+               for m in sent_messages)
+
+    # (1) bounce_state was set before the abandoned yield, so the background
+    # task still bounces even though stream() was never resumed normally.
+    assert calls == ["bounce"]
+
+    # (2) force the async-generator finalizer that the running loop already
+    # has registered (see docstring) to actually run, rather than relying on
+    # incidental GC timing.
+    gc.collect()
+    for _ in range(50):
+        await anyio.sleep(0)
+
+    log = fake_env["home"] / ".local" / "state" / "ollie-orchestrator" / "audit.log"
+    assert log.exists(), "audit row missing: stream()'s finally never ran under cancellation"
     rows = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
     creates = [r for r in rows if r["op"] == "create" and r["agent_id"] == "tmp"]
     assert len(creates) == 1

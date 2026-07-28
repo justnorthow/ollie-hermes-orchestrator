@@ -142,18 +142,43 @@ async def create(body: CreateAgent, request: Request) -> StreamingResponse:
 
     async def stream():
         result_event = None
-        async for ev in create_agent(req):
-            if ev.get("event") in ("done", "error"):
-                result_event = ev
-                yield sse_event(event=ev["event"], data=ev)
-            else:
-                yield sse_event(event="progress", data=ev)
-        result = "ok" if (result_event or {}).get("event") == "done" else "error"
-        bounce_state["needed"] = result == "ok"
-        duration = (result_event or {}).get("duration_ms", 0)
-        audit(cfg.audit_log_path, op="create", agent_id=body.name,
-              actor_ip=actor_ip, result=result, duration_ms=duration,
-              error=(result_event or {}).get("error"))
+        try:
+            async for ev in create_agent(req):
+                if ev.get("event") in ("done", "error"):
+                    result_event = ev
+                    if ev["event"] == "done":
+                        # Set the instant "done" is observed, not at the tail
+                        # below: on this server's Starlette version a client
+                        # disconnect races the send of this very chunk —
+                        # Starlette's task-group cancels stream_response
+                        # without ever resuming this generator, so any code
+                        # after the yield below may simply never run. The
+                        # deferred BackgroundTask (self.background()) still
+                        # runs unconditionally once the response call
+                        # returns, so bounce_state must already be correct
+                        # by the time this chunk is handed to send(), not
+                        # after.
+                        bounce_state["needed"] = True
+                    yield sse_event(event=ev["event"], data=ev)
+                else:
+                    yield sse_event(event="progress", data=ev)
+        finally:
+            # finally, not tail code: a disconnect that cancels this
+            # generator mid-stream (or abandons it, cleaned up later via
+            # GeneratorExit) still needs the audit row written. result_event
+            # faithfully reflects whatever outcome was actually observed —
+            # done, error, or neither if the disconnect landed before either.
+            result = "ok" if (result_event or {}).get("event") == "done" else "error"
+            # Re-affirm rather than re-derive from scratch: bounce_state was
+            # already set True above the instant "done" was seen, so this
+            # only needs to guarantee the error/cancelled-before-done case
+            # never bounces — it can never contradict the assignment above,
+            # since both read the same result_event.
+            bounce_state["needed"] = bounce_state["needed"] and result == "ok"
+            duration = (result_event or {}).get("duration_ms", 0)
+            audit(cfg.audit_log_path, op="create", agent_id=body.name,
+                  actor_ip=actor_ip, result=result, duration_ms=duration,
+                  error=(result_event or {}).get("error"))
 
     return StreamingResponse(
         stream(),
