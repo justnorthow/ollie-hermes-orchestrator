@@ -192,6 +192,11 @@ async def create(body: CreateAgent, request: Request) -> StreamingResponse:
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
         },
+        # Deferred bounce relies on Starlette's spec_version < (2,4) branch,
+        # where cancelled streams still await background() before task exit.
+        # uvicorn 0.41.0 pins spec_version=2.3 in h11 & httptools; a future
+        # uvicorn bump past that will flip behaviour. Test pins 2.3 too, so the
+        # suite will stay green when production breaks: re-check this path.
         background=BackgroundTask(_bounce_after_create, cfg, actor_ip, body.name, bounce_state),
     )
 

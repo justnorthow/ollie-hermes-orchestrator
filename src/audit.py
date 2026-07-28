@@ -40,8 +40,8 @@ def audit(
     if error:
         record["error"] = error
     record.update(_redact(extras))
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
