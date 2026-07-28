@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 from src.agents_json import AgentEntry, read_agents, write_agent, remove_agent
+from src import proxy_maps
 from src.config import Config
 from src.docker_ops import bounce_dashboard
 from src.lock import async_file_lock
@@ -148,6 +149,16 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
                 avatar_url=(req.avatar_url.strip() or None) if req.avatar_url is not None else None,
             )
             write_agent(env_path, entry)
+            # Keep the orchestrator's proxy maps covering the new agent. Folded
+            # into this step rather than emitted as its own SSE event: the
+            # frontend's create modal has eight hardcoded steps and a ninth
+            # would desynchronise it. Best-effort — loopback_url_for() already
+            # resolves this agent from AGENTS_JSON, so a failure here costs only
+            # gate cleanliness, never a working agent.
+            try:
+                proxy_maps.sync(cfg.orch_env_path, read_agents(env_path))
+            except Exception:
+                _logger.warning("proxy map sync failed after create", exc_info=True)
             yield _ev("update_agents_json")
             completed_steps.append("update_agents_json")
 
@@ -203,6 +214,12 @@ async def _rollback_create(name: str, completed_steps: list[str], env_path) -> N
             remove_agent(env_path, name)
         except Exception:
             _logger.warning("rollback: remove_agent failed", exc_info=True)
+        try:
+            from src.config import Config as _Config
+            proxy_maps.sync(_Config.load().orch_env_path,
+                            read_agents(env_path), drop_ids=(name,))
+        except Exception:
+            _logger.warning("rollback: proxy map sync failed", exc_info=True)
     if "install_dashboard" in completed_steps:
         try:
             stop_and_remove_service(f"hermes-dashboard-{name}")
@@ -267,6 +284,11 @@ async def delete_agent(agent_id: str) -> dict:
             remove_agent(env_path, agent_id)
         except Exception:
             _logger.warning("delete: AGENTS_JSON failed", exc_info=True)
+        try:
+            proxy_maps.sync(cfg.orch_env_path, read_agents(env_path),
+                            drop_ids=(agent_id,))
+        except Exception:
+            _logger.warning("delete: proxy map sync failed", exc_info=True)
         # The dashboard bounce is deliberately NOT done here: the dashboard
         # container houses the nginx that proxied this very DELETE, so an
         # inline bounce severs the in-flight response and the browser sees a
