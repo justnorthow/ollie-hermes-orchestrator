@@ -38,3 +38,19 @@ def test_instance_id_defaults_and_reads_env(monkeypatch):
     assert Config.load().instance_id == "default"
     monkeypatch.setenv("INSTANCE_ID", "sandbox")
     assert Config.load().instance_id == "sandbox"
+
+
+def test_orch_env_path_defaults_under_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORCHESTRATOR_KEY", "topsecret")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ORCH_ENV", raising=False)
+    cfg = Config.load()
+    assert cfg.orch_env_path == tmp_path / ".config" / "ollie-orchestrator" / ".env"
+
+
+def test_orch_env_path_honours_orch_env_var(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORCHESTRATOR_KEY", "topsecret")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ORCH_ENV", str(tmp_path / "custom.env"))
+    cfg = Config.load()
+    assert cfg.orch_env_path == tmp_path / "custom.env"

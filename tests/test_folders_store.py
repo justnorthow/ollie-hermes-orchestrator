@@ -13,6 +13,7 @@ def _cfg(tmp_path: Path) -> Config:
         systemd_user_dir=tmp_path / "systemd",
         audit_log_path=tmp_path / "audit.log",
         instance_id="default",
+        orch_env_path=tmp_path / "orch.env",
     )
 
 

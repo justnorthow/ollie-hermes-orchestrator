@@ -16,6 +16,7 @@ class Config:
     systemd_user_dir: Path
     audit_log_path: Path
     instance_id: str
+    orch_env_path: Path
 
     @classmethod
     def load(cls) -> "Config":
@@ -30,6 +31,8 @@ class Config:
         audit = Path(os.environ.get("AUDIT_LOG_PATH",
                                     home / ".local" / "state" / "ollie-orchestrator" / "audit.log"))
         instance_id = os.environ.get("INSTANCE_ID", "").strip() or "default"
+        orch_env = Path(os.environ.get(
+            "ORCH_ENV", home / ".config" / "ollie-orchestrator" / ".env"))
         return cls(
             orchestrator_key=key,
             hermes_stack_dir=stack,
@@ -38,4 +41,5 @@ class Config:
             systemd_user_dir=systemd_dir,
             audit_log_path=audit,
             instance_id=instance_id,
+            orch_env_path=orch_env,
         )
