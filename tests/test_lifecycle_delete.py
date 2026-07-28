@@ -54,20 +54,25 @@ async def test_delete_refuses_default(fake_env):
 
 
 @pytest.mark.asyncio
-async def test_delete_does_not_bounce_dashboard_inline(fake_env, monkeypatch):
+async def test_delete_does_not_bounce_dashboard_inline(fake_env):
     """The dashboard bounce must NOT happen inside delete_agent: the container
     houses the nginx proxying the DELETE itself, so an inline bounce severs the
     in-flight response and the browser sees a 502 for a delete that succeeded
     (sandbox 'pam', 2026-07-17). The API layer defers it via BackgroundTasks —
-    delete_agent just reports bounce_needed."""
+    delete_agent just reports bounce_needed.
+
+    Guarded here by construction rather than by monkeypatching a
+    lifecycle-module bounce_dashboard symbol: since
+    fix/create-modal-deferred-bounce, lifecycle.py no longer imports
+    bounce_dashboard at all (create's deferred bounce moved to
+    api/agents.py), so there is nothing left in this module that could call
+    it inline."""
     import src.lifecycle as lifecycle_mod
+    assert not hasattr(lifecycle_mod, "bounce_dashboard")
     await _create("paige")
-    calls: list[str] = []
-    monkeypatch.setattr(lifecycle_mod, "bounce_dashboard", lambda: calls.append("bounce"))
     result = await delete_agent("paige")
     assert result["ok"] is True
     assert result.get("bounce_needed") is True
-    assert calls == []
 
 
 @pytest.mark.asyncio

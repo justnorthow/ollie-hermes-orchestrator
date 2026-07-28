@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from src.agents_json import read_agents
 from src.api import authz
 from src.auth import require_bearer
@@ -90,6 +91,27 @@ async def get_agent(agent_id: str, request: Request) -> dict:
     return _entry_to_agent(e, cfg)
 
 
+def _bounce_after_create(cfg, actor_ip: str, agent_id: str, state: dict) -> None:
+    """Runs as a BackgroundTask after the create's SSE body has been fully
+    sent. bounce_dashboard() recreates the ollie-dashboard container, which
+    houses the nginx proxying this very response — calling it inside the
+    generator cancelled the request task mid-flight, so the browser rendered
+    none of the eight progress events and the audit row at the tail of
+    stream() never ran (diagnosed on the GetBilled box via the missing
+    'paige' create row, 2026-07-28). Mirrors _bounce_after_delete below.
+    Must never raise: a raising background task poisons the request in tests
+    and logs."""
+    if not state.get("needed"):
+        # A failed create already rolled back; a bounce would be pure disruption.
+        return
+    try:
+        bounce_dashboard()
+    except Exception as e:
+        _logger.warning("create: deferred dashboard bounce failed", exc_info=True)
+        audit(cfg.audit_log_path, op="create", agent_id=agent_id, actor_ip=actor_ip,
+              result="error", duration_ms=0, error=f"deferred bounce failed: {e}")
+
+
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def create(body: CreateAgent, request: Request) -> StreamingResponse:
     denied = authz.admin_denied(request)
@@ -114,6 +136,10 @@ async def create(body: CreateAgent, request: Request) -> StreamingResponse:
         avatar_url=body.avatar_url,
     )
 
+    # Set by stream() once the outcome is known, read by the background task
+    # after the body has been sent. Mirrors delete's `bounce_needed`.
+    bounce_state: dict = {"needed": False}
+
     async def stream():
         result_event = None
         async for ev in create_agent(req):
@@ -123,12 +149,26 @@ async def create(body: CreateAgent, request: Request) -> StreamingResponse:
             else:
                 yield sse_event(event="progress", data=ev)
         result = "ok" if (result_event or {}).get("event") == "done" else "error"
+        bounce_state["needed"] = result == "ok"
         duration = (result_event or {}).get("duration_ms", 0)
         audit(cfg.audit_log_path, op="create", agent_id=body.name,
               actor_ip=actor_ip, result=result, duration_ms=duration,
               error=(result_event or {}).get("error"))
 
-    return StreamingResponse(stream(), media_type="text/event-stream", status_code=202)
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        status_code=202,
+        # Cloudflare buffers text/event-stream when it transforms it, and
+        # compression is the usual trigger; no-transform is the documented
+        # opt-out. X-Accel-Buffering pairs with the proxy_buffering off already
+        # in the generated agents.conf block.
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+        background=BackgroundTask(_bounce_after_create, cfg, actor_ip, body.name, bounce_state),
+    )
 
 
 def _bounce_after_delete(cfg, actor_ip: str, agent_id: str) -> None:

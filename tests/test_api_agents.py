@@ -67,11 +67,16 @@ def test_delete_schedules_deferred_dashboard_bounce(client, monkeypatch):
     """The bounce runs as a BackgroundTask after the 204 is sent (mirrors
     instance.py's deferred _bounce_after_write) — TestClient executes
     background tasks as part of the request cycle, so a scheduled bounce is
-    observable as exactly one call alongside the 204."""
+    observable as exactly one call alongside the 204.
+
+    bounce_dashboard is patched AFTER the setup create (not before): create
+    now also schedules its own deferred bounce through this same symbol
+    (fix/create-modal-deferred-bounce), so patching earlier would double-count
+    the create's bounce alongside the delete's."""
     import src.api.agents as agents_mod
+    _create_tmp_agent(client)
     calls: list[str] = []
     monkeypatch.setattr(agents_mod, "bounce_dashboard", lambda: calls.append("bounce"))
-    _create_tmp_agent(client)
     r = client.delete("/v1/agents/tmp", headers=_auth())
     assert r.status_code == 204
     assert calls == ["bounce"]
@@ -353,3 +358,80 @@ def test_get_agent_includes_scope(client, fake_env):
     resp = client.get("/v1/agents/olivia", headers=_auth())
     assert resp.status_code == 200
     assert resp.json()["scope"] == "company"
+
+
+def test_create_schedules_deferred_dashboard_bounce(client, monkeypatch):
+    """The bounce must run as a BackgroundTask AFTER the SSE body is sent, not
+    inside the generator: it recreates the container housing the nginx that
+    proxies this very response, so an inline call cancels the request task and
+    the browser never sees the eight progress events (GetBilled, 2026-07-28)."""
+    import src.api.agents as agents_mod
+    calls: list[str] = []
+    monkeypatch.setattr(agents_mod, "bounce_dashboard", lambda: calls.append("bounce"))
+    _create_tmp_agent(client)
+    assert calls == ["bounce"]
+
+
+def test_create_failure_does_not_bounce(client, monkeypatch):
+    """A create that failed has already rolled back; restarting the dashboard
+    container would be pure disruption."""
+    import src.api.agents as agents_mod
+    _create_tmp_agent(client)          # first one succeeds and bounces
+    calls: list[str] = []
+    monkeypatch.setattr(agents_mod, "bounce_dashboard", lambda: calls.append("bounce"))
+    body = {"name": "tmp", "provider": "anthropic", "model": "m",
+            "apiKey": "k", "enabledSkills": []}
+    r = client.post("/v1/agents", json=body, headers=_auth())   # duplicate name
+    events = []
+    for raw in r.iter_lines():
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        if raw.startswith("data: "):
+            events.append(json.loads(raw[6:]))
+    assert any(ev.get("event") == "error" for ev in events)
+    assert calls == []
+
+
+def test_create_bounce_failure_does_not_break_the_stream(client, monkeypatch):
+    """A failing deferred bounce must never surface to the caller — the create
+    itself succeeded."""
+    import src.api.agents as agents_mod
+
+    def boom():
+        raise RuntimeError("docker down")
+
+    monkeypatch.setattr(agents_mod, "bounce_dashboard", boom)
+    body = {"name": "tmp", "provider": "anthropic", "model": "m",
+            "apiKey": "k", "enabledSkills": []}
+    r = client.post("/v1/agents", json=body, headers=_auth())
+    assert r.status_code == 202
+    events = []
+    for raw in r.iter_lines():
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        if raw.startswith("data: "):
+            events.append(json.loads(raw[6:]))
+    assert any(ev.get("event") == "done" for ev in events)
+
+
+def test_create_response_carries_anti_buffering_headers(client):
+    """Cloudflare buffers text/event-stream when it transforms it; no-transform
+    is the documented opt-out, and X-Accel-Buffering pairs with the
+    proxy_buffering off already in the generated agents.conf."""
+    body = {"name": "tmp", "provider": "anthropic", "model": "m",
+            "apiKey": "k", "enabledSkills": []}
+    r = client.post("/v1/agents", json=body, headers=_auth())
+    list(r.iter_lines())
+    assert "no-transform" in r.headers["cache-control"]
+    assert r.headers["x-accel-buffering"] == "no"
+
+
+def test_create_writes_an_audit_row(client, fake_env):
+    """The audit call sits at the tail of stream(); when the bounce cancelled
+    the request task it never ran, so UI-created agents went unrecorded."""
+    _create_tmp_agent(client)
+    log = fake_env["home"] / ".local" / "state" / "ollie-orchestrator" / "audit.log"
+    rows = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    creates = [r for r in rows if r["op"] == "create" and r["agent_id"] == "tmp"]
+    assert len(creates) == 1
+    assert creates[0]["result"] == "ok"
