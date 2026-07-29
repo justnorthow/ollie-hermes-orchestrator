@@ -1191,9 +1191,20 @@ def test_every_entry_has_metadata_fields():
 
     for entry in MODELS:
         assert entry.get("speed_class") in ("fast", "heavy"), entry
-        assert isinstance(entry.get("price_in"), (int, float)), entry
-        assert isinstance(entry.get("price_out"), (int, float)), entry
         assert isinstance(entry.get("verified_at"), str), entry
+
+
+def test_price_may_be_absent_only_on_unverified_entries():
+    """A missing price is honest for an unreviewed entry. A verified entry with
+    no price means someone signed off without recording the cost."""
+    from src.catalog import MODELS
+
+    for entry in MODELS:
+        has_price = isinstance(entry.get("price_in"), (int, float)) and isinstance(
+            entry.get("price_out"), (int, float)
+        )
+        if entry["verified_at"] != "never":
+            assert has_price, f"verified entry is missing a price: {entry}"
 
 
 def test_long_context_threshold_shape_when_present():
@@ -1244,20 +1255,30 @@ MODELS = [
         "speed_class": "fast", "price_in": 1.00, "price_out": 5.00,
         "long_context_threshold": None, "verified_at": "2026-07-29",
     },
+    # Price left as None deliberately: not verified. Do NOT fill these in from
+    # memory or from a search result — read them off the vendor's own pricing
+    # page, then set verified_at to that date.
     {
         "provider": "openai", "id": "gpt-5.5", "label": "GPT-5.5",
-        "speed_class": "fast", "price_in": 1.25, "price_out": 10.00,
+        "speed_class": "fast", "price_in": None, "price_out": None,
         "long_context_threshold": None, "verified_at": "never",
     },
     {
         "provider": "groq", "id": "llama-3.3-70b", "label": "Llama 3.3 70B (Groq)",
-        "speed_class": "fast", "price_in": 0.59, "price_out": 0.79,
+        "speed_class": "fast", "price_in": None, "price_out": None,
         "long_context_threshold": None, "verified_at": "never",
     },
 ]
 ```
 
-> **Reviewer note.** `gpt-5.5` and `llama-3.3-70b` carry `verified_at: "never"` deliberately — their prices are unconfirmed placeholders and the weekly run will flag both as overdue for review until a human checks them. That is the intended behavior, not an oversight. Do not substitute guessed prices to silence the finding.
+> **Reviewer note.** `gpt-5.5` and `llama-3.3-70b` carry `price_in: None` and
+> `verified_at: "never"` deliberately — nobody has verified their prices, and an
+> explicit `None` says that, where a plausible-looking number would not. The weekly run
+> flags both as overdue for review until a human checks them. That is the intended
+> behavior, not an oversight. Do not substitute guessed prices to silence the finding.
+>
+> The three Anthropic prices above are from the vendor pricing table as of 2026-07-29,
+> which is why they carry a real `verified_at`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
