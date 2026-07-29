@@ -1454,7 +1454,25 @@ git commit -m "feat(catalog-check): escalate a provider unverifiable twice runni
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `tests/test_catalog_sinks.py`:
+Append to `tests/test_catalog_sinks.py`.
+
+First, an autouse fixture. `run()` reads Linear credentials from the environment
+once Task 12 lands, and a developer or CI runner that happens to export
+`LINEAR_API_KEY` would turn these tests into live network calls. The Global
+Constraint is that every test runs offline with no credentials, so isolate the
+environment for the whole module rather than relying on it being unset:
+
+```python
+@pytest.fixture(autouse=True)
+def _no_linear_credentials(monkeypatch):
+    """Every test in this module must run offline. Clear Linear credentials so
+    run() cannot reach the network even on a machine that has them set."""
+    monkeypatch.delenv("LINEAR_API_KEY", raising=False)
+    monkeypatch.delenv("LINEAR_TEAM_ID", raising=False)
+```
+
+Add `import pytest` to the top of the file if it is not already present. Then the
+`run()` tests:
 
 ```python
 def test_run_returns_zero_and_writes_report_on_clean_catalog(tmp_path, monkeypatch):
@@ -1641,8 +1659,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # to commit the report
-  issues: write            # reserved for the Linear/issue sink (Task 12)
+  contents: write          # to commit the report — the only write this job needs
+  # No issues: write. The optional sink posts to Linear's own API with its own
+  # token, not to GitHub issues, so granting issue permissions here would be
+  # privilege the job never exercises.
 
 jobs:
   check:
