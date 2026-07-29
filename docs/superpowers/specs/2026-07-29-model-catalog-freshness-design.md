@@ -182,19 +182,39 @@ the catalog but, per JB, not used with Hermes because of the OAuth limitation.
 Anthropic stays in scope despite being unused: its two entries are the ones currently
 malformed, and a customer box may hold an API key even where JNOW does not.
 
-**Two fetch mechanisms, per provider, in order:**
+**The scrape path is primary. There is no API-key path in CI.**
 
-1. **Provider model list API** — authoritative, structured, cheap. Requires an API key
-   in Actions secrets.
-2. **Docs / release-notes scrape** — fallback where no API key exists. Less precise,
-   and cannot see capability flags, but it does answer "does this id still exist" and
-   "what shipped recently," which is most of the value.
+Per JB (2026-07-29): OAuth is used wherever possible; metered API keys are too
+expensive to hold. That is not merely a preference to design around — it is a hard
+constraint on an unattended job:
 
-Mechanism 2 exists because a subscription OAuth token generally cannot enumerate models
-programmatically — the same limitation that keeps Anthropic models out of Hermes may
-apply to the model-list endpoints. **Open question for review: which providers do we
-hold API keys for?** The answer decides which providers get mechanism 1; it does not
-block the design, because every provider has a working fallback.
+> **OAuth is structurally incompatible with a weekly CI run.** OAuth access tokens are
+> short-lived and refresh through an interactive browser flow. A GitHub Actions job has
+> no browser, no operator, and no durable place to complete a refresh. Even where OAuth
+> authenticates a model-list endpoint successfully from a laptop, it cannot do so
+> unattended a week later.
+
+So the mechanisms invert from the obvious ordering:
+
+1. **Docs / release-notes scrape — the primary mechanism.** Unauthenticated, so it
+   works in CI indefinitely. Answers the two questions that carry most of the value:
+   *does this id still exist*, and *what shipped recently*. Cannot read capability
+   flags.
+2. **Provider model list API — an optional enhancement, attended runs only.** If a key
+   ever exists for a provider, the same diff engine can consume the structured list and
+   additionally verify context windows, output caps, and capability flags. Invoked
+   locally via `python -m`, never required by the workflow.
+
+Worth noting once, because it may be a cheap unlock: **model-list endpoints are not
+metered** — enumerating models consumes no tokens and costs nothing per call. The
+blocker is possessing a key at all, not the per-call cost. If any provider key exists
+for unrelated reasons, mechanism 2 becomes available for that provider at zero
+marginal cost. This does not change the CI design, which must not depend on a key.
+
+**Consequence for the diff categories:** under mechanism 1 alone, the **Changed**
+category (context window, output cap, capability flags) cannot be evaluated. It is
+reported as **unverifiable** rather than silently omitted, so a green run never implies
+"capabilities confirmed unchanged" when capabilities were never checked.
 
 **Every run records which mechanism served each provider, and names any provider it
 could not check at all.** A provider silently skipped would make a green run mean
@@ -209,7 +229,14 @@ Each `MODELS` entry gains three operator-set fields alongside `provider` / `id` 
 |---|---|---|
 | `speed_class` | `fast` \| `heavy` — consult-eligibility | operator judgment |
 | `price_in` / `price_out` | $ per MTok | vendor pricing page |
+| `long_context_threshold` | input tokens above which pricing multipliers apply, and the multipliers | vendor pricing page |
 | `verified_at` | date the entry was last human-reviewed | the adoption checklist |
+
+`long_context_threshold` exists because a speed class alone does not bound cost. The
+GPT-5.6 family applies **2× input / 1.5× output above 272K input tokens** — so a peer
+that is cheap at normal context becomes expensive at large context, with no change in
+model. Dispatch needs this to guard a consult that would drag a large working context
+to a peer; without it, the cheap-peer rule is only half a cost control.
 
 `speed_class` is introduced here rather than in the dispatch spec so that dispatch
 consumes an existing field instead of adding one. `verified_at` is what makes staleness
@@ -225,9 +252,13 @@ this spec.
 
 - **Actions not enabled on the repo.** Blocks slice 2. Detected immediately on first
   push; falls back to `workflow_dispatch`-only or a scheduled Claude Code routine.
-- **Scrape fragility.** Vendor doc pages change layout. Mitigation: the scrape path
-  reports "unverifiable" rather than asserting a wrong answer, and unverifiable never
-  fails the build.
+- **Scrape fragility — now the primary risk, since the scrape path is the only one that
+  runs in CI.** Vendor doc pages change layout, and a silently-broken scraper produces a
+  green run that checked nothing. Mitigations: the scrape path reports **unverifiable**
+  rather than asserting a wrong answer; each provider's scraper asserts it found a
+  plausible minimum number of models before reporting success; and a provider that
+  returns unverifiable for **two consecutive runs** is escalated as a finding in its own
+  right. Silence is treated as failure, not as absence of news.
 - **Noisy diffs after a vendor launch wave.** A week with three launches produces a
   large **New** list. Acceptable: **New** does not fail the run, and the report groups
   by provider.
@@ -273,4 +304,35 @@ on is accurate and stays that way.
 
 The speed / cost class field is added to the catalog **here** — as an operator-set
 value with no automated source — so the dispatch work can consume it rather than
-introduce it.
+introduce it. Same for `long_context_threshold`, which the cheap-peer rule needs in
+order to bound consult cost rather than only consult latency.
+
+## Appendix: research for slice 1 (2026-07-29)
+
+Gathered while writing this spec. **Prices and tiers are from vendor and aggregator
+pages; the literal API id strings are NOT confirmed and must be read from the provider
+before slice 1 lands.** The authoritative local sources are the Codex setup in use and
+`~/.hermes/config.yaml` on a provisioned box.
+
+**OpenAI GPT-5.6** — three tiers, all ~1.05M context (922K max input, 128K max output),
+2× input / 1.5× output above 272K input:
+
+| Tier | In / Out per MTok | Proposed `speed_class` |
+|---|---|---|
+| Sol | $5 / $30 | `heavy` — flagship, long sessions, "Sol Ultra" high-effort mode |
+| Terra | $2.50 / $15 | `fast` — balanced, the likely default |
+| Luna | $1 / $6 | `fast` — fastest and cheapest, near GPT-5.5 on several tests |
+
+Availability caveat: the 2026-06-26 announcement described Sol as a limited preview with
+access restrictions; pages dated 2026-07-29 describe all three as generally available
+via API, ChatGPT, and Codex. **Confirm entitlement before adding Sol.** Codex is the
+channel that matters here, since the boxes run the `openai-codex` provider.
+
+**Anthropic** — current line is Fable 5 (`claude-fable-5`), Opus 5 (`claude-opus-5`),
+Sonnet 5 (`claude-sonnet-5`), Haiku 4.5 (`claude-haiku-4-5`). Ids are hyphenated; the
+two existing catalog entries are malformed. Not used with Hermes per JB, so these are
+correctness fixes for the picker, not a live path. Fable 5 should be excluded from
+consult regardless of class: thinking cannot be disabled, turns can run many minutes,
+and it 400s every request from a zero-data-retention org.
+
+**Groq** — `llama-3.3-70b` unchanged, `fast`.
