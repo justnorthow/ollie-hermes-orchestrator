@@ -135,3 +135,14 @@ def stop_and_remove_service(unit_name: str) -> None:
         _systemctl("daemon-reload")
     except subprocess.CalledProcessError:
         pass
+    # `stop` does not clear a unit that was already in `failed` state, so once
+    # its file is gone the entry lingers in systemd's state table as
+    # `not-found failed` — noise in exactly the surface we read box state from
+    # (three such entries after two UI deletes on GetBilled, 2026-07-29; the
+    # agents' gateways were failing because they never got API keys). Only
+    # reset-failed clears it, and it must run AFTER daemon-reload has dropped
+    # the file.
+    try:
+        _systemctl("reset-failed", unit_name)
+    except subprocess.CalledProcessError:
+        pass

@@ -121,3 +121,17 @@ def test_stop_and_remove_service_disables_and_unlinks(fake_env):
     log = (fake_env["logs"] / "systemctl.log").read_text()
     assert "stop hermes-dashboard-paige" in log
     assert "disable hermes-dashboard-paige" in log
+
+
+def test_stop_and_remove_service_clears_failed_state(fake_env):
+    """`stop` does NOT clear a unit that was already in `failed` state, so the
+    entry survives in systemd's state table as `not-found failed` long after its
+    file is gone. Deleting two throwaway agents through the UI on the GetBilled
+    box (2026-07-29) left three such entries behind — noise in exactly the
+    surface we read box state from. Only `reset-failed` clears them, and it must
+    run AFTER daemon-reload has dropped the unit file."""
+    install_dashboard_service("paige", port=9121)
+    stop_and_remove_service("hermes-dashboard-paige")
+    log = (fake_env["logs"] / "systemctl.log").read_text()
+    assert "reset-failed hermes-dashboard-paige" in log
+    assert log.index("daemon-reload") < log.index("reset-failed hermes-dashboard-paige")
