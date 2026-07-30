@@ -115,8 +115,35 @@ is consult-only.
 
 ## Deployment prerequisites
 
-One configuration change is required before enabling dispatch
-on the GetBilled box.
+One blocker and one configuration change stand before this can be
+planned and enabled.
+
+### 0. BLOCKER — the session id Cortex receives is not the one the orchestrator stores
+
+**Verified 2026-07-30 and currently false.** Option A's provenance depends on
+`get_session_owner(agent_id, session_id)` finding a row. It would not find one.
+
+| Side | Value |
+|---|---|
+| What Hermes hands the provider | `agent.session_id` (`agent/agent_init.py:1653`). API-created sessions look like `api_<ts>_<hex>` — `gateway/platforms/api_server.py:3291`. |
+| What the orchestrator stores in `agent_sessions.hermes_session_id` | the **run id** it generated while proxying — `run_0bd84b68…` (`src/api/runs.py:336`) |
+
+Different namespaces. Every consult would resolve no owner, fail closed, and
+refuse `forbidden`. Dispatch would deploy and refuse 100% of requests.
+
+Evidence: every row on both boxes is `run_`-prefixed — 16/16 on JNOW, 1/1 on
+GetBilled. Zero real session ids have ever been recorded.
+
+**This is plumbing, not architecture.** The orchestrator already has the capture
+path: `_scan_frame_for_session` (`src/api/runs.py:136`) scrapes `session_id` out
+of the gateway's SSE frames and records it (`runs.py:454`, `runs.py:545`), and
+the gateway does emit it (`api_server.py:2641`). But those call sites sit on the
+governed/streaming paths, and across 17 rows the path has never fired.
+
+Before any of this spec can be planned, settle: does the gateway emit
+`session_id` on the ordinary (non-governed) run path the boxes actually use, and
+if so why is it not captured? The fix is likely small. The point is that it is a
+named work item rather than an assumption.
 
 ### 1. A consultable specialist must run a `fast` model
 
