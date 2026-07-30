@@ -1,220 +1,202 @@
 # Dispatch tools via Cortex — design
 
-**Date:** 2026-07-30
-**Status:** approved in conversation, not yet planned
+**Date:** 2026-07-30 (rewritten same day — see *Revision history*)
+**Status:** approved in conversation, ready to plan
 **Supersedes:** `plugins/dispatch/` in this repo, which cannot load — see
 `2026-07-30-dispatch-plugin-loading-spike.md`
 **Implements in:** `ollie-hermes-cortex`, not this repo
 
 ## Why this exists
 
-The switchable-dispatch work shipped an orchestrator API (`/v1/dispatch/*`) and a
-Hermes-side plugin (`plugins/dispatch/`). The API is correct and in use-ready
-shape. The plugin cannot load: Hermes has no generic tool-plugin category, and
-`get_tool_schemas()` / `handle_tool_call()` / `initialize(session_id)` is the
-**`MemoryProvider`** contract. The spike doc has the evidence.
+The orchestrator half of dispatch shipped and works: `/v1/dispatch/*`, the
+authority model, provenance resolution, the audit trail, the in-flight bound.
+The Hermes half — `plugins/dispatch/` — cannot load.
 
-The supported alternative — an MCP server — cannot carry the Hermes conversation
-session id, so it cannot carry provenance, and provenance is the entire basis of
-the design.
+Hermes has no generic tool-plugin category. `get_tool_schemas()` /
+`handle_tool_call()` / `system_prompt_block()` / `get_config_schema()` /
+`initialize(session_id)` is the **`MemoryProvider`** contract; all ten
+production implementers on a live box live under `plugins/memory/`.
+`DispatchProvider` implements that shape without being registered as one, so
+nothing will ever call it.
 
-**Cortex already satisfies every requirement.** It is a memory provider, so it is
-loaded and its tools are called. It receives `initialize(session_id)` and stashes
-it (`provider.py:44-45`). It already implements `get_tool_schemas()` and
-`handle_tool_call()`. And it is our own repo, so nothing depends on upstream.
+The supported alternative is MCP (`hermes mcp add`), but an MCP tool call
+cannot carry the Hermes conversation session id — `session.call_tool(name,
+arguments=args)` passes arguments only, and MCP headers are static per
+registration. Without a session id there is no provenance, and provenance is
+the basis of the whole design.
 
-So: host the dispatch tools inside Cortex.
+**Cortex satisfies every requirement.** It is a memory provider, so it loads and
+its tools are called. It receives `initialize(session_id)` and already stashes
+it. It already implements the tool hooks. It is our own repo, so nothing waits
+on upstream.
 
-## The trade we are making
+## What has been verified, and when
 
-This is deliberate impurity. Dispatch tools in a memory plugin is not where they
-belong architecturally, and we are choosing it because it is the only option that
-ships with the security model intact.
+Everything below was checked against live boxes on 2026-07-30. It is recorded
+because two earlier conclusions in this area were wrong, both from reading one
+code path and generalising to another.
+
+| Claim | Status |
+|---|---|
+| Hermes hands the provider `agent.session_id` | ✅ `agent/agent_init.py:1653` |
+| Cortex stashes it | ✅ `plugins/memory/cortex/provider.py:44-45` |
+| That id equals `agent_sessions.hermes_session_id` | ✅ **measured** — a live run returned `session_id == run_id == run_44371e29…`, and the matching `agent_sessions` row resolved the owner. `api_server.py:6164` is `session_id = session_id or run_id`. |
+| Karl M is consult-eligible | ✅ `gpt-5.6-terra` (`fast`) in both `AGENTS_JSON` and his profile config |
+| Vendored plugins survive `hermes update` | ✅ untracked; the update stashes with `--include-untracked` and restores. No `git clean` in the update path. |
+| Scope/tier does not gate consults | ✅ removed 2026-07-30 — any agent may consult any agent |
+
+**The one thing still unverified** is the last hop: that the string
+`initialize(session_id)` receives is that same session id rather than something
+re-derived inside the agent. Everything points that way and the run-path
+evidence is strong, but it has not been observed from inside a provider. It is
+a Task-1 test below rather than an assumption.
+
+## The trade
+
+Dispatch tools in a memory plugin is not where they belong. We are choosing it
+because it is the only option that ships with the security model intact.
 
 | Cost | Assessment |
 |---|---|
-| Two concerns in one plugin | Real. Contained by keeping dispatch in its own module and touching the provider only at three seams. |
-| Dispatch releases couple to Cortex releases | Real. Acceptable — both are ours and deploy together. |
-| Boxes without Cortex get no dispatch | Real. Both current boxes run it. |
-| Upstream could tighten what a memory plugin may expose | Low, unquantifiable. Mitigated by keeping the tool surface small; exit is the upstream `tools` category. |
-| ~~Wiped by `hermes update`~~ | **Not a cost.** Vendored plugins are untracked and survive the stash/pull/restore. Verified on both boxes. |
-
-The exit remains open: if a generic tool category lands upstream, the dispatch
-module moves out of Cortex nearly unchanged.
+| Two concerns in one plugin | Real. Contained by keeping dispatch in its own module and touching the provider at three seams. |
+| Dispatch releases couple to Cortex releases | Acceptable — both are ours and deploy together. |
+| Boxes without Cortex get no dispatch | Both current boxes run it. |
+| Upstream could tighten what a memory plugin may expose | Low. Mitigated by a small tool surface; the exit is an upstream `tools` category, and the module moves out nearly unchanged if that lands. |
 
 ## Where the code goes
 
-New module `plugins/memory/cortex/dispatch.py` in `ollie-hermes-cortex`, holding
-everything dispatch-specific. `provider.py` changes at exactly three seams:
+New module `plugins/memory/cortex/dispatch.py` in `ollie-hermes-cortex`.
+`provider.py` changes at exactly three seams:
 
-1. `get_tool_schemas()` — append the dispatch schemas when dispatch is enabled
+1. `get_tool_schemas()` — append dispatch schemas when enabled
 2. `handle_tool_call()` — delegate the two dispatch tool names
 3. `system_prompt_block()` — append the dispatch rules when enabled
 
-Nothing else in Cortex changes. `initialize()` already stores the session id.
+`initialize()` already stores the session id; nothing else in Cortex changes.
 
-Port from `ollie-hermes-orchestrator/plugins/dispatch/`: the HTTP client, the
-refusal vocabulary (`reasons.py`), the transport-failure classification, and the
-off-mode gating. That code was reviewed and is sound; it changes address, not
-substance.
+Port from `ollie-hermes-orchestrator/plugins/dispatch/`: the refusal
+vocabulary, the transport-failure classification, and the mode gating. That
+code was reviewed and is sound — but it must be **adapted to Cortex's
+conventions, not transplanted**:
 
-**Two shape changes on the way over.** Cortex's tool schemas use `"parameters"`,
-not `"input_schema"`. And `handle_tool_call(name, args) -> str` returns a JSON
-string, not a dict. Both are Cortex conventions and the ported code must match
-them, not the other way round.
+| Cortex convention | What the ported code does today |
+|---|---|
+| Tool schemas use `"parameters"` | uses `"input_schema"` |
+| `handle_tool_call(name, args) -> str` returns a JSON **string** | returns a dict |
+| `CortexHttpClient` uses stdlib **`urllib.request`** | uses `httpx` |
+| Its client hardcodes `timeout=10` | dispatch needs **75s** (server worst case 60s) |
+| Its client raises `RuntimeError` on HTTP error | dispatch must convert to a structured refusal |
+
+The stdlib choice is deliberate for a vendored plugin — do not introduce an
+httpx dependency to save porting effort. The 10s timeout means dispatch needs
+its own client or a timeout parameter; do not raise Cortex's memory timeout to
+75s as a shortcut.
 
 ## Isolation — the constraint that outranks the feature
 
-**Cortex's memory tools must keep working no matter what dispatch does.** Memory
-is load-bearing on both boxes; dispatch is new and optional. A dispatch bug that
-breaks `memory_search` is a far worse outcome than dispatch not working.
+**Cortex's memory tools must keep working no matter what dispatch does.**
+Memory is load-bearing on both boxes; dispatch is new and optional. A dispatch
+bug that breaks `memory_search` is a far worse outcome than dispatch not
+working at all.
 
-Concretely:
-
-- Dispatch state is constructed lazily and its construction cannot raise into
-  `__init__`. A failure to configure dispatch leaves a working memory plugin.
+- Dispatch state is constructed lazily; its construction cannot raise into
+  `__init__`.
 - `get_tool_schemas()` returns the memory schemas even if the dispatch block
-  raises. The dispatch schemas are appended inside a guard.
+  raises — dispatch schemas are appended inside a guard.
 - `handle_tool_call()` routes memory names first. A dispatch name that fails
-  returns a structured refusal; it never propagates.
-- No dispatch import at module scope in `provider.py` that could fail the plugin
-  load.
+  returns a structured refusal and never propagates.
+- No dispatch import at module scope in `provider.py` that could fail the load.
 
-This is testable and should be tested explicitly: with dispatch misconfigured in
-every way we can think of, the four memory tools still work.
+This is the requirement most likely to be traded away by an implementer
+optimising for clean structure. It gets its own task and its own tests.
 
 ## Behaviour
 
-Unchanged from the reviewed design, restated here so this spec stands alone.
-
 **Modes.** `DISPATCH_MODE` in the profile environment: `off` (default) or
-`direct`. Anything else — including the reserved `local` and `linear` — behaves
-as `off`. In `off` mode Cortex exposes **zero** dispatch tools and **zero**
-dispatch prompt text; the agent's context is identical to a box where this was
-never built.
+`direct`. Anything else — including the reserved `local` and `linear` —
+behaves as `off`. In `off` mode Cortex exposes **zero** dispatch tools and
+**zero** dispatch prompt text: an agent's context is identical to a box where
+this was never built.
 
 **Tools.** `list_teammates` (no arguments) and `ask_teammate` (`to_agent`,
 `question`). No `assign_task` — there is no durable queue in this slice, and a
-tool that implies one would license the model to claim work was assigned.
+tool implying one would license the model to claim work was assigned.
 
 **Provenance.** Every call sends `from_agent` (from `DISPATCH_AGENT_ID`) and
 `session_id` (from `initialize()`). The orchestrator resolves the human via
 `get_session_owner(agent_id, session_id)` and refuses when it cannot. Nothing
 about the human is asserted by the model.
 
-**Refusals.** Every failure is a structured refusal, never an exception and never
+**Reach.** Any agent may consult any agent. `scope` / `manager_visible` govern
+how *humans* reach agents — they keep a picker uncluttered so a user need not
+work out which specialist to ask — and deliberately do not narrow an agent's
+roster. Where the origin human could not have opened the peer directly, the
+orchestrator stamps `beyond_human_reach` on the audit row. Recorded, not
+blocked.
+
+**Refusals.** Every failure is a structured refusal — never an exception, never
 an empty string. An exception or empty tool result reaching a language model is
-precisely when it invents a plausible answer and presents another agent's
-supposed opinion as fact. The plugin's own vocabulary — auth failure, connection
-failure, timeout, and a generic error — stays disjoint from the server's
-`REASON_*` set so a reader can tell which side refused.
+exactly when it invents a plausible answer and presents another agent's
+supposed opinion as fact. The plugin's own vocabulary (auth failure, connection
+failure, timeout, generic error) stays disjoint from the server's `REASON_*`
+set so a reader can tell which side refused.
 
 **System prompt block.** Two rules, only when enabled: never fabricate a
-teammate's answer, and never describe work as assigned or handed off — `direct`
-is consult-only.
-
-## Deployment prerequisites
-
-One configuration change, and one cheap verification, stand before this
-can be planned and enabled.
-
-### 0. RETRACTED — the session ids do match
-
-An earlier revision of this spec recorded a BLOCKER here: that the session id
-Cortex receives is a different namespace from what `agent_sessions` stores, so
-every consult would refuse `forbidden`. **That was wrong and is retracted.**
-
-The run path in `gateway/platforms/api_server.py`:
-
-```python
-session_id = body.get("session_id") or stored_session_id   # :6150
-...
-run_id = f"run_{uuid.uuid4().hex}"                          # :6163
-session_id = session_id or run_id                           # :6164
-```
-
-With no client-supplied id, **Hermes uses the run id as the session id**. With
-one, it adopts it verbatim. Either way the value equals what the orchestrator
-stores — and `src/api/runs.py:336` pre-claims that run id as the session row on
-purpose, with a comment saying so: "Hermes v0.18 emits no session_id in a first
-run's SSE frames, so the frontend's done-event fallback reuses THIS run id as
-session_id on the thread's next message."
-
-So the `run_*` values in `agent_sessions` are not a foreign namespace. They are
-the session id, by construction.
-
-**How the error was made, since it is worth not repeating:** the `api_<ts>_<hex>`
-format at `api_server.py:3291` was read and generalised to the run path. That
-line belongs to the **fork** endpoint. One code path was read and a conclusion
-drawn about a different one.
-
-**What is still genuinely unverified** is the last hop: that `agent.session_id`
-— the value `initialize(session_id)` hands the provider — is this same string
-rather than something re-derived inside the agent. The evidence points that way
-(the run path threads `session_id` into the agent construction and the run
-status), but it has not been observed end to end. Settle it with one live run:
-create a run through the orchestrator, read the session id Hermes reports back,
-and compare it to the run id and to the `agent_sessions` row. Cheap, and it
-converts the last assumption into an observation.
-
-### 1. A consultable specialist must run a `fast` model
-
-Consult eligibility comes from the model catalog's `speed_class`. `fast` peers
-can be consulted inline; `heavy` peers are listed but not consult-eligible, so a
-slow expensive model can never block another agent's turn.
-
-**Karl M currently runs `gpt-5.6-sol`, which is `heavy`.** He is the only
-specialist on the box. So with today's config, dispatch would deploy and Billie
-could consult nobody.
-
-Move Karl to `gpt-5.6-terra` (classified `fast`, the balanced tier) for consults
-to work. Sol remains appropriate for work driven directly by a human; only inline
-consults need the fast class.
-
-Without this change slice 1 delivers nothing observable, which is worth knowing
-before building rather than after.
-
-### 2. Nothing — scope no longer gates consults
-
-An earlier draft of this spec listed a scope/tier prerequisite here. It no
-longer applies: the roster filter was removed on 2026-07-30.
-
-`scope` and `manager_visible` govern how a **human** reaches an agent, so a
-user is not left working out which specialist to ask. They do not limit which
-peers an agent may consult — any agent may consult any agent. `list_teammates`
-returns the whole bench at every tier.
-
-The consequence to be deliberate about: enabling dispatch widens effective
-information access without changing any tier or scope, because anyone who can
-reach an agent can reach, through it, what every other agent knows. It is
-bounded by consults being read-only, and every crossing is stamped on the audit
-row as `beyond_human_reach` so it stays auditable after the fact.
-
-Billie is `scope: "user"` on the GetBilled box (changed 2026-07-30) so any
-signed-in user reaches her. Karl M remains `scope: "company"`. That still
-governs whether a human can open Karl **directly** — it no longer affects
-whether Billie can consult him on their behalf.
+teammate's answer, and never describe work as assigned or handed off —
+`direct` is consult-only.
 
 ## Testing
 
 The ported logic keeps its tests. Add:
 
-- **Memory survives dispatch failure** — the isolation property above, tested
-  against several distinct misconfigurations.
-- **Off-mode inertness** — no dispatch tool names and no dispatch prompt text in
-  `off`, `local`, `linear`, and a typo. Verify by guard deletion, not by
-  assertion alone: an acceptance test that passes on arrival must be shown to
-  fail when the guard is removed.
-- **Schema shape** — dispatch schemas use `"parameters"` and sit alongside the
-  memory schemas without colliding on names.
-- **Session id reaches the payload** — `initialize()` then a consult, asserting
-  the outgoing `session_id`. This is the property the whole approach exists for.
+- **The session id reaches the payload.** Call `initialize()` with a known id,
+  then a consult, and assert the outgoing `session_id` is that exact string.
+  This is the last unverified hop and the property the whole approach rests on.
+- **Memory survives dispatch failure.** The isolation property above, against
+  several distinct misconfigurations — missing env, unreachable orchestrator,
+  malformed config, dispatch module raising on import.
+- **Off-mode inertness.** No dispatch tool names and no dispatch prompt text in
+  `off`, `local`, `linear`, and a typo. **Verify by guard deletion**, not by
+  assertion alone: a test that passes on arrival must be shown to fail when the
+  guard is removed.
+- **Schema shape.** Dispatch schemas use `"parameters"`, `handle_tool_call`
+  returns a JSON string, and the names do not collide with the memory tools.
+
+**A note on verification method, learned the hard way today:** a check without a
+negative control can report false safety. `/api/status` on Hermes needs no auth
+at all, so "the old token still returns 200" looked like a failed rotation and
+was not. Where a test asserts something is gated, include the ungated control.
+
+## Deployment
+
+No prerequisites remain. Karl is on Terra, the provenance chain is measured, and
+scope no longer gates consults. Enabling is:
+
+1. `DISPATCH_MODE=direct` on **both** the profile env and the orchestrator env —
+   two processes, two environments. See `docs/runbooks/agent-dispatch.md`.
+2. `DISPATCH_AGENT_ID`, `ORCHESTRATOR_URL`, `ORCHESTRATOR_KEY` in the profile env.
+3. Restart the profile's gateway.
 
 ## Out of scope
 
 `assign_task`, the durable queue, heartbeats, the dashboard queue view, and the
-Linear adapter. Those are the later slices and none are unblocked by this work.
+Linear adapter — later slices, none unblocked by this work.
 
-Removing `plugins/dispatch/` from the orchestrator repo is also out of scope for
-now — it stays as reference for the port, with the runbook's stop notice
-preventing anyone deploying it. Delete it once this lands.
+Deleting `plugins/dispatch/` from the orchestrator repo happens when this lands;
+until then it stays as porting reference behind the runbook's stop notice.
+
+## Revision history
+
+Rewritten 2026-07-30 rather than patched. The first version accumulated a
+retracted BLOCKER and two rewritten prerequisites, and had become an archaeology
+site rather than a statement of what is true. Superseded content:
+
+- A prerequisite claiming the session ids were different namespaces. **Wrong** —
+  `api_server.py:6164` derives the session id from the run id, now measured on a
+  live box. The error came from reading the *fork* endpoint (`:3291`) and
+  generalising to the run path.
+- A prerequisite requiring Karl to move to a `fast` model. **Done.**
+- A prerequisite about scope/tier admitting the right people. **Obsolete** — the
+  roster filter was removed the same day.
+- A cost line claiming vendored plugins are wiped by `hermes update`. **Wrong** —
+  they are untracked and survive the stash/pull/restore.
