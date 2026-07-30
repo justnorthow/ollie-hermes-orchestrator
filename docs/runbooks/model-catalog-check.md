@@ -30,13 +30,43 @@ so it stays fully offline).
 
 | Code | Meaning |
 |---|---|
-| `0` | Clean, or drift that is not blocking (new model available, provider unverifiable, entry overdue for review). |
-| `1` | Blocking: an id in the catalog that the provider no longer lists — a typo or a retirement. Customer-visible dead option. |
+| `0` | Clean, or drift that is not blocking (new model available, provider unverifiable, entry overdue for review, id not on a partial source). |
+| `1` | Blocking: an id in the catalog that the provider no longer lists, on a source that lists everything it serves — a typo or a real retirement. Customer-visible dead option. |
 | `2` | The check itself failed unexpectedly (a bug, an I/O error) — not a finding. Read the job log, not `latest.md`. |
 
 The GitHub Actions job's final step reads the real exit code and reports
 each case differently, so a crash is never mistaken for "catalog has unknown
 ids" or vice versa.
+
+## What a missing id does and does not prove
+
+Presence and absence are not symmetric evidence. Finding an id on a provider's
+docs page proves the model exists. **Not** finding one proves only that the
+page does not document it — which is a different claim, and a weaker one.
+
+Each provider therefore declares `absence_is_authoritative` in
+`src/catalog_check/providers.py`. Where it is true, a missing catalog id is
+reported as **Unknown ids — BLOCKING** and fails the run. Where it is false,
+it is reported as **Not on the checked page — REVIEW** and does not.
+
+`openai` is false, and this is the reason: the boxes do not reach OpenAI
+through the first-party API that `platform.openai.com/docs/models` describes.
+Hermes's `openai-codex` provider talks to `chatgpt.com/backend-api/codex`,
+which on 2026-07-30 served ten ids where that page accounted for three —
+`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark` and `-pro`
+variants of the whole 5.6 family are all available and none are documented
+there.
+
+That is not a hypothetical. On 2026-07-30 this check reported `gpt-5.5`
+missing, the run went red, and the model was deleted from `src/catalog.py` —
+while it was still being served and while `tests/conftest.py` still seeded it
+as a profile's `model.default`. The check had talked us out of offering the
+model the boxes boot with.
+
+**So: never delete an id from `src/catalog.py` on a REVIEW finding alone.**
+Confirm against the surface the boxes actually use — open a profile's
+dashboard and read its model picker. Checking the Codex backend automatically
+would need an OAuth token, which an unattended weekly job cannot hold.
 
 ## Linear sink (optional)
 

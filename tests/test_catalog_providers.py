@@ -188,3 +188,32 @@ def test_anthropic_pattern_and_reject_drop_dated_snapshot_suffix():
     assert result.available is True
     assert "claude-opus-5-20250219" not in result.model_ids
     assert "claude-opus-5" in result.model_ids
+
+
+def test_scrape_propagates_the_absence_claim():
+    """The flag is declared on the config and consumed in diff.py; if the fetch
+    layer drops it, every provider silently reverts to blocking on absence."""
+    config = ScrapeConfig(
+        provider="openai",
+        url="https://example.test/models",
+        pattern=r"gpt-[a-z0-9.\-]+",
+        min_models=1,
+        absence_is_authoritative=False,
+    )
+
+    result = scrape_provider(config, fetch=lambda url: "gpt-5.6-sol gpt-5.6-terra")
+
+    assert result.available is True
+    assert result.absence_is_authoritative is False
+
+
+def test_the_openai_source_does_not_describe_the_route_the_boxes_use():
+    """Boxes reach OpenAI through Hermes's openai-codex provider
+    (chatgpt.com/backend-api/codex), which serves ids platform.openai.com/docs
+    has never listed. Flipping this back would re-arm the failure that deleted
+    gpt-5.5 from the catalog on 2026-07-30.
+    """
+    from src.catalog_check.providers import SCRAPE_CONFIGS
+
+    openai = next(c for c in SCRAPE_CONFIGS if c.provider == "openai")
+    assert openai.absence_is_authoritative is False

@@ -57,7 +57,13 @@ def compute_diff(
 
         result = by_provider.get(provider)
         if result is not None and result.available and model_id not in result.model_ids:
-            diff.unknown.append((provider, model_id))
+            # Absence only means "retired" if the source enumerates everything
+            # the provider serves. Otherwise it means "not on this page", which
+            # is a question, not a verdict — see ProviderResult.
+            if result.absence_is_authoritative:
+                diff.unknown.append((provider, model_id))
+            else:
+                diff.unlisted.append((provider, model_id))
 
         verified = _parse_verified_at(entry.get("verified_at"))
         if verified is None:

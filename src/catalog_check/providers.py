@@ -35,6 +35,24 @@ class ScrapeConfig:
     #: versioned aliases that the extraction pattern cannot avoid matching
     #: on its own without hardcoding known model-family names.
     reject: str | None = None
+    #: Does this source enumerate EVERY id we could be served, so that an id's
+    #: absence from it means the id is genuinely gone?
+    #:
+    #: Presence and absence are not symmetric evidence. Finding an id on a docs
+    #: page proves the model exists; not finding one proves only that the page
+    #: does not document it. Set this False whenever the boxes reach a provider
+    #: through a route the scraped page does not describe — then a catalog id
+    #: missing from the scrape is reported for a human to look at rather than
+    #: failing the run.
+    #:
+    #: This is not hypothetical. On 2026-07-30 the openai scrape found gpt-5.5
+    #: absent from platform.openai.com/docs/models, the run went red, and the
+    #: model was deleted from the catalog — while Hermes's openai-codex
+    #: provider was still serving it, and still serving five more ids that
+    #: page has never listed. tests/conftest.py seeds gpt-5.5 as the default
+    #: profile model, so the check had talked us out of offering the model the
+    #: boxes actually boot with.
+    absence_is_authoritative: bool = True
 
 
 #: One entry per provider appearing in src.catalog.MODELS.
@@ -63,6 +81,19 @@ SCRAPE_CONFIGS: list[ScrapeConfig] = [
         url="https://platform.openai.com/docs/models",
         pattern=r"gpt-[0-9]+(?:\.[0-9]+)*(?:-[a-z]+)*",
         min_models=2,
+        # The boxes do not reach OpenAI through the first-party API this page
+        # documents. Hermes's `openai-codex` provider talks to
+        # chatgpt.com/backend-api/codex, and on 2026-07-30 it offered ten ids
+        # where this page accounted for three of them: gpt-5.5, gpt-5.4,
+        # gpt-5.4-mini, gpt-5.3-codex-spark and -pro variants of the whole 5.6
+        # family are all served and none are documented here.
+        #
+        # So this page is a good source for "a new model shipped" and a bad one
+        # for "a model went away". Checking the authoritative surface would mean
+        # authenticating to the Codex backend, which an unattended weekly job
+        # cannot do — the OAuth token refreshes interactively. Until that
+        # changes, a missing openai id is a question for a human, not a failure.
+        absence_is_authoritative=False,
     ),
     ScrapeConfig(
         provider="groq",
@@ -112,7 +143,12 @@ def scrape_provider(
             f"{config.min_models} — page layout may have changed",
         )
 
-    return ProviderResult(config.provider, found, MECHANISM_SCRAPE)
+    return ProviderResult(
+        config.provider,
+        found,
+        MECHANISM_SCRAPE,
+        absence_is_authoritative=config.absence_is_authoritative,
+    )
 
 
 def fetch_all(

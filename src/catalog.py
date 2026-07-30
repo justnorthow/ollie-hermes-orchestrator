@@ -25,8 +25,17 @@ MODELS = [
     },
     # GPT-5.6 family. Ids confirmed from OpenAI's own docs list via the catalog
     # check's live run on 2026-07-30; prices read off OpenAI's pricing page the
-    # same day. gpt-5.5 was retired here because that same run found it absent
-    # from the provider's list.
+    # same day.
+    #
+    # WHAT THIS LIST IS NOT: the boxes reach OpenAI through Hermes's
+    # `openai-codex` provider (chatgpt.com/backend-api/codex), which on
+    # 2026-07-30 served ten ids — the three below plus gpt-5.5, gpt-5.4,
+    # gpt-5.4-mini, gpt-5.3-codex-spark, and -pro variants of all three 5.6
+    # models. We deliberately offer a subset; the others are available and
+    # simply not on the picker. Do NOT treat their absence here as evidence
+    # they are retired, and do not delete an id from this file because the
+    # weekly check could not find it on platform.openai.com/docs — that page
+    # does not describe the Codex route. See catalog_check/providers.py.
     #
     # long_context_threshold: the 2.0x input / 1.5x output multipliers are
     # vendor-confirmed (Sol $5/$30 -> $10/$45, Terra $2.50/$15 -> $5/$22.50,
@@ -56,6 +65,27 @@ MODELS = [
             "tokens": 272_000, "input_multiplier": 2.0, "output_multiplier": 1.5,
         },
         "verified_at": "2026-07-30",
+    },
+    # Still served by openai-codex and still what tests/conftest.py seeds as a
+    # profile's model.default. Availability and speed class confirmed by JB
+    # against a live profile's model picker on 2026-07-30, after the weekly
+    # check wrongly reported it retired and it was briefly deleted from here.
+    #
+    # heavy => listed as a teammate but NOT consult-eligible, so no agent can
+    # block its own turn waiting on it.
+    #
+    # verified_at stays "never" on purpose even though JB confirmed the id and
+    # the speed class today: in this schema verified_at gates the PRICE (see
+    # tests/test_catalog_rules.py), and the price is genuinely unknown. These
+    # models are reached over OAuth through Codex rather than the metered
+    # first-party API, so the docs' per-token rates may not describe what this
+    # costs at all. Leaving it "never" keeps the entry in the weekly report's
+    # stale list until someone establishes the real number. Do not fill it in
+    # from memory to silence that.
+    {
+        "provider": "openai", "id": "gpt-5.5", "label": "GPT-5.5",
+        "speed_class": "heavy", "price_in": None, "price_out": None,
+        "long_context_threshold": None, "verified_at": "never",
     },
     # Price still unverified — do NOT fill this in from memory or a search
     # result; read it off the vendor's own pricing page, then set verified_at.

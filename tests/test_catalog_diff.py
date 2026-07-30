@@ -218,3 +218,54 @@ def test_real_declined_list_is_wellformed_and_does_not_contradict_the_catalog():
     shaped = declined_ids()
     assert set(shaped) == set(DECLINED)
     assert all(isinstance(v, list) for v in shaped.values())
+
+
+# --- absence is not symmetric with presence -----------------------------------
+#
+# The regression these pin: on 2026-07-30 the openai scrape found gpt-5.5 absent
+# from platform.openai.com/docs/models, `unknown` turned CI red, and the model
+# was deleted from the catalog — while Hermes's openai-codex provider was still
+# serving it, and tests/conftest.py still seeded it as a profile's model.default.
+# Finding an id on a docs page proves the model exists; not finding one proves
+# only that the page does not document it.
+
+def test_absence_from_a_partial_source_is_review_not_blocking():
+    """A source that covers one route into a provider cannot testify that a
+    model reached over another route is gone."""
+    diff = compute_diff(
+        _catalog(("openai", "gpt-5.5", {"verified_at": "never"})),
+        [ProviderResult("openai", frozenset({"gpt-5.6-sol"}), "scrape",
+                        absence_is_authoritative=False)],
+        TODAY,
+    )
+
+    assert diff.unlisted == [("openai", "gpt-5.5")]
+    assert diff.unknown == []
+    assert diff.has_blocking_findings is False
+
+
+def test_absence_from_a_complete_source_still_blocks():
+    """The relaxation must not leak to providers whose source really does
+    enumerate everything — otherwise a genuine typo stops failing the run."""
+    diff = compute_diff(
+        _catalog(("anthropic", "claude-nonesuch-9", {"verified_at": "never"})),
+        [ProviderResult("anthropic", frozenset({"claude-opus-5"}), "scrape")],
+        TODAY,
+    )
+
+    assert diff.unknown == [("anthropic", "claude-nonesuch-9")]
+    assert diff.unlisted == []
+    assert diff.has_blocking_findings is True
+
+
+def test_authoritative_absence_is_the_default():
+    """A ScrapeConfig author who says nothing gets the strict behaviour. Opting
+    out has to be a deliberate, documented act."""
+    assert ProviderResult("x", frozenset(), "scrape").absence_is_authoritative is True
+
+
+def test_unlisted_alone_is_not_a_clean_run():
+    """It must still appear in the report — advisory, not invisible."""
+    diff = Diff(unlisted=[("openai", "gpt-5.5")])
+    assert diff.is_empty is False
+    assert diff.has_blocking_findings is False

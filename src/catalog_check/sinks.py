@@ -58,6 +58,27 @@ def render_report(diff: Diff, today: date, mechanisms: dict[str, str]) -> str:
         lines += [f"- `{provider}` / `{model_id}`" for provider, model_id in diff.unknown]
         lines.append("")
 
+    if diff.unlisted:
+        lines += [
+            "## Not on the checked page — REVIEW, not blocking",
+            "",
+            "In the catalog, absent from the source we can check. That source "
+            "does not enumerate everything the provider serves, so this may be "
+            "a retirement or may just be a model reached over a route the page "
+            "does not document.",
+            "",
+            "**Confirm against the surface the boxes actually use before "
+            "removing anything.** For openai that is Hermes's `openai-codex` "
+            "provider, not `platform.openai.com/docs` — check the model picker "
+            "in a profile's dashboard. Deleting a model from `src/catalog.py` "
+            "on this finding alone has already dropped a live model once.",
+            "",
+        ]
+        lines += [
+            f"- `{provider}` / `{model_id}`" for provider, model_id in diff.unlisted
+        ]
+        lines.append("")
+
     if diff.new:
         lines += [
             "## New models available",
