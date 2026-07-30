@@ -23,14 +23,42 @@ MODELS = [
         "speed_class": "fast", "price_in": 1.00, "price_out": 5.00,
         "long_context_threshold": None, "verified_at": "2026-07-29",
     },
-    # Price left as None deliberately: not verified. Do NOT fill these in from
-    # memory or from a search result — read them off the vendor's own pricing
-    # page, then set verified_at to that date.
+    # GPT-5.6 family. Ids confirmed from OpenAI's own docs list via the catalog
+    # check's live run on 2026-07-30; prices read off OpenAI's pricing page the
+    # same day. gpt-5.5 was retired here because that same run found it absent
+    # from the provider's list.
+    #
+    # long_context_threshold: the 2.0x input / 1.5x output multipliers are
+    # vendor-confirmed (Sol $5/$30 -> $10/$45, Terra $2.50/$15 -> $5/$22.50,
+    # Luna $1/$6 -> $2/$9). The 272_000-token trigger is NOT stated on OpenAI's
+    # pricing page and comes from a third-party aggregator — re-check it before
+    # relying on the exact boundary.
     {
-        "provider": "openai", "id": "gpt-5.5", "label": "GPT-5.5",
-        "speed_class": "fast", "price_in": None, "price_out": None,
-        "long_context_threshold": None, "verified_at": "never",
+        "provider": "openai", "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol",
+        "speed_class": "heavy", "price_in": 5.00, "price_out": 30.00,
+        "long_context_threshold": {
+            "tokens": 272_000, "input_multiplier": 2.0, "output_multiplier": 1.5,
+        },
+        "verified_at": "2026-07-30",
     },
+    {
+        "provider": "openai", "id": "gpt-5.6-terra", "label": "GPT-5.6 Terra",
+        "speed_class": "fast", "price_in": 2.50, "price_out": 15.00,
+        "long_context_threshold": {
+            "tokens": 272_000, "input_multiplier": 2.0, "output_multiplier": 1.5,
+        },
+        "verified_at": "2026-07-30",
+    },
+    {
+        "provider": "openai", "id": "gpt-5.6-luna", "label": "GPT-5.6 Luna",
+        "speed_class": "fast", "price_in": 1.00, "price_out": 6.00,
+        "long_context_threshold": {
+            "tokens": 272_000, "input_multiplier": 2.0, "output_multiplier": 1.5,
+        },
+        "verified_at": "2026-07-30",
+    },
+    # Price still unverified — do NOT fill this in from memory or a search
+    # result; read it off the vendor's own pricing page, then set verified_at.
     {
         "provider": "groq", "id": "llama-3.3-70b", "label": "Llama 3.3 70B (Groq)",
         "speed_class": "fast", "price_in": None, "price_out": None,

@@ -164,3 +164,57 @@ def test_duplicate_provider_results_do_not_produce_contradictory_diff():
     assert d.unknown == []
     # Overall result should be clean
     assert d.is_empty is True
+
+
+def test_declined_ids_are_excluded_from_new():
+    models = _catalog(("openai", "gpt-5.6-terra", {"verified_at": "2026-07-01"}))
+    results = [ProviderResult("openai", frozenset({"gpt-5.6-terra", "gpt-4"}), "scrape")]
+
+    d = compute_diff(models, results, TODAY, declined={"openai": ["gpt-4"]})
+
+    assert d.new == []
+
+
+def test_declined_does_not_suppress_unknown():
+    """A declined id sitting in the catalog is still a finding — being on offer
+    in the picker is what `unknown` is about, regardless of our intent."""
+    models = _catalog(("openai", "gpt-4", {"verified_at": "2026-07-01"}))
+    results = [ProviderResult("openai", frozenset({"gpt-5.6-terra"}), "scrape")]
+
+    d = compute_diff(models, results, TODAY, declined={"openai": ["gpt-4"]})
+
+    assert d.unknown == [("openai", "gpt-4")]
+
+
+def test_declined_omitted_keeps_previous_behaviour():
+    models = _catalog(("openai", "gpt-5.6-terra", {"verified_at": "2026-07-01"}))
+    results = [ProviderResult("openai", frozenset({"gpt-5.6-terra", "gpt-4"}), "scrape")]
+
+    assert compute_diff(models, results, TODAY).new == [("openai", "gpt-4")]
+
+
+def test_declined_is_scoped_per_provider():
+    models = _catalog(("openai", "gpt-5.6-terra", {"verified_at": "2026-07-01"}))
+    results = [ProviderResult("openai", frozenset({"gpt-5.6-terra", "gpt-4"}), "scrape")]
+
+    # "gpt-4" declined under a different provider must not filter openai's.
+    d = compute_diff(models, results, TODAY, declined={"anthropic": ["gpt-4"]})
+
+    assert d.new == [("openai", "gpt-4")]
+
+
+def test_real_declined_list_is_wellformed_and_does_not_contradict_the_catalog():
+    from src.catalog import MODELS
+    from src.catalog_declined import DECLINED, declined_ids
+
+    catalogued = {(m["provider"], m["id"]) for m in MODELS}
+    for provider, entries in DECLINED.items():
+        for model_id, reason in entries.items():
+            assert reason.strip(), f"{provider}/{model_id} has no reason"
+            assert (provider, model_id) not in catalogued, (
+                f"{provider}/{model_id} is both declined and on offer in MODELS"
+            )
+
+    shaped = declined_ids()
+    assert set(shaped) == set(DECLINED)
+    assert all(isinstance(v, list) for v in shaped.values())

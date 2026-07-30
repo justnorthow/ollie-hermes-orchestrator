@@ -25,8 +25,18 @@ def compute_diff(
     results: list[ProviderResult],
     today: date,
     stale_after_days: int = 365,
+    declined: dict[str, list[str]] | None = None,
 ) -> Diff:
-    """Compare catalog entries against fetched provider model lists."""
+    """Compare catalog entries against fetched provider model lists.
+
+    `declined` maps a provider to ids we know about and deliberately do not
+    offer; they are excluded from `new`. Without it the report re-proposes every
+    superseded model the provider still serves, every run, forever.
+
+    It never affects `unknown`: a declined id that somehow ends up in the catalog
+    is still a finding, because being on offer in the picker is the thing that
+    matters there.
+    """
     by_provider = {r.provider: r for r in results}
     diff = Diff()
 
@@ -56,11 +66,17 @@ def compute_diff(
             diff.stale.append((provider, model_id, verified.isoformat()))
 
     catalogued = {(m["provider"], m["id"]) for m in models}
+    declined_pairs = {
+        (provider, model_id)
+        for provider, ids in (declined or {}).items()
+        for model_id in ids
+    }
     for result in by_provider.values():
         if not result.available:
             continue
         for model_id in sorted(result.model_ids):
-            if (result.provider, model_id) not in catalogued:
-                diff.new.append((result.provider, model_id))
+            pair = (result.provider, model_id)
+            if pair not in catalogued and pair not in declined_pairs:
+                diff.new.append(pair)
 
     return diff

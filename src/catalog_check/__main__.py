@@ -16,6 +16,7 @@ import traceback
 from typing import Callable
 
 from src.catalog import MODELS
+from src.catalog_declined import declined_ids
 from src.catalog_check.diff import compute_diff
 from src.catalog_check.providers import SCRAPE_CONFIGS, fetch_all, http_fetch
 from src.catalog_check.sinks import (
@@ -32,7 +33,7 @@ _STATE_FILENAME = "state.json"
 
 def run(root: Path, today: date, fetch: Callable[[str], str]) -> int:
     results = fetch_all(SCRAPE_CONFIGS, fetch=fetch)
-    diff = compute_diff(MODELS, results, today)
+    diff = compute_diff(MODELS, results, today, declined=declined_ids())
 
     mechanisms = {r.provider: r.mechanism for r in results}
     report = render_report(diff, today, mechanisms)
