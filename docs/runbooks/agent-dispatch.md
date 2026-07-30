@@ -1,6 +1,13 @@
 # Agent-to-agent dispatch (`direct` mode)
 
-Design: `docs/superpowers/specs/2026-07-30-switchable-dispatch-design.md`.
+Design, orchestrator side:
+`docs/superpowers/specs/2026-07-30-switchable-dispatch-design.md`.
+Design, agent side (the tools, hosted in Cortex):
+`docs/superpowers/specs/2026-07-30-dispatch-via-cortex-design.md`.
+
+Both halves are built, merged and tested. Enabling is configuration only — see
+below. The one thing that will bite you is that `DISPATCH_MODE` must be set in
+**two** environments.
 
 ## What it does
 
@@ -67,35 +74,45 @@ orchestrator with it, and without it every call 401s and comes back as
 `http://127.0.0.1:9123` and only needs setting if the orchestrator is not on
 loopback's default port.
 
-> ## ⛔ STOP — the agent side of this cannot be installed yet
->
-> **`plugins/dispatch/` does not load on Hermes today.** A spike against a live
-> box on 2026-07-30 found that Hermes has no generic tool-plugin category:
-> `get_tool_schemas()` / `handle_tool_call()` / `initialize(session_id)` is the
-> **`MemoryProvider`** contract, and every production implementer lives under
-> `plugins/memory/`. `DispatchProvider` implements that shape but is not
-> registered as a memory provider, so nothing calls it.
->
-> The supported way to add tools is MCP (`hermes mcp add`) — but an MCP tool
-> call cannot carry the Hermes conversation session id, so it cannot carry
-> provenance, which is the whole basis of this design. That is a design change,
-> not a repackaging.
->
-> Full findings, with file:line evidence and the three options:
-> `docs/superpowers/specs/2026-07-30-dispatch-plugin-loading-spike.md`.
->
-> **The orchestrator half below is unaffected and correct.** `/v1/dispatch/*`
-> works for any caller that can present resolvable provenance. Everything in
-> this runbook about modes, refusals, access control, the audit trail and the
-> in-flight bound holds. What does not exist yet is the agent-side client.
-
-Then, once an agent-side client exists:
+Then restart that profile's gateway:
 
 ```bash
-# NOT YET POSSIBLE — see the stop notice above.
-hermes plugins install <owner/repo>   # takes a repo, not a subdirectory
-# restart that profile's gateway
+systemctl --user restart hermes-gateway              # the default profile
+systemctl --user restart hermes-gateway-<profile>    # any other profile
 ```
+
+**The agent-side tools live in Cortex, not in a plugin of their own.** There is
+nothing to `hermes plugins install`. If a box already runs the Cortex memory
+provider, it already has the code — the env vars above plus a gateway restart
+are the whole install.
+
+Confirm Cortex is actually the active provider before you expect any of this to
+work, since that is the real prerequisite:
+
+```bash
+grep -A3 '^memory:' ~/.hermes/config.yaml          # the default profile
+ls ~/.hermes/hermes-agent/plugins/memory/cortex/   # the code is present
+```
+
+Why: Hermes has **no generic tool-plugin category**. `get_tool_schemas()` /
+`handle_tool_call()` / `initialize(session_id)` is the **`MemoryProvider`**
+contract, and every production implementer on a live box lives under
+`plugins/memory/`. `plugins/dispatch/` in *this* repo was built against a
+contract that does not exist for tools and **cannot load**; it survives only as
+porting reference and will be deleted. MCP (`hermes mcp add`) is the supported
+way to add tools, but an MCP tool call cannot carry the Hermes conversation
+session id, so it cannot carry provenance — the basis of this whole design.
+
+Cortex is the only surface that both loads *and* receives the session id. The
+tools live at `ollie-hermes-cortex/plugins/memory/cortex/dispatch.py`; the
+provider delegates at three seams and holds no dispatch logic of its own.
+
+Evidence and the options considered:
+`docs/superpowers/specs/2026-07-30-dispatch-plugin-loading-spike.md`.
+Design: `docs/superpowers/specs/2026-07-30-dispatch-via-cortex-design.md`.
+
+**A box without Cortex gets no dispatch.** That is a real limitation, not an
+oversight — both current boxes run it.
 
 ### 3. Any agent may consult any agent — on purpose
 
@@ -126,10 +143,19 @@ If an agent genuinely "cannot see" a teammate, it is not a scope problem —
 check that the peer is in `AGENTS_JSON` at all, and that its model is
 `fast`-class (see consult eligibility below).
 
-Default is `off`. In `off` mode the plugin contributes **zero** tool schemas
-and **zero** system-prompt text — an agent's context is byte-identical to a
-box that never had the plugin installed at all (`tests/test_dispatch_off_is_inert.py`
-pins this so a later refactor can't quietly regress it).
+Default is `off`. In `off` mode Cortex contributes **zero** dispatch tool
+schemas and **zero** dispatch prompt text — an agent's context is byte-identical
+to a box where this was never built. Pinned on both sides so a later refactor
+cannot quietly regress it: `tests/test_dispatch_off_is_inert.py` here for the
+server, and `tests/test_dispatch_isolation.py` in `ollie-hermes-cortex` for the
+plugin surface (that one compares the off-mode prompt against the exact
+pre-dispatch block, not a substring).
+
+**Cortex's own memory and brain tools keep working no matter what dispatch
+does.** That constraint outranks the feature: memory is load-bearing on both
+boxes, dispatch is optional. Every seam is guarded, and each guard is verified
+by deletion rather than by a green suite. If dispatch is misconfigured, broken,
+or its module is unimportable, `memory_search` and the rest still answer.
 
 **Plugins survive `hermes update` — confirmed 2026-07-30.** No re-install step
 is needed, for either kind of plugin:
@@ -161,10 +187,16 @@ the human) exactly why the ask didn't go through.
 There are **two vocabularies**, and which one you're looking at tells you which
 side refused. Server reasons come from `REASON_*` in `src/dispatch/types.py`
 and mean the orchestrator considered the request and said no. Plugin reasons
-are defined in `plugins/dispatch/reasons.py` and mean the request never reached
-the orchestrator at all — the plugin cannot import from `src/` (it runs on a
-Hermes box where the orchestrator package isn't installed), so it has its own.
-The two sets are deliberately disjoint.
+are defined in `ollie-hermes-cortex/plugins/memory/cortex/dispatch.py` and mean
+the request never reached the orchestrator at all — that code cannot import
+from `src/` (it runs on a Hermes box where the orchestrator package isn't
+installed), so it carries its own.
+
+The two sets are deliberately **disjoint**, and a test asserts it. That is not
+cosmetic: `dispatch is off` is reachable from either side, and if both used
+`not_enabled` you could not tell "the orchestrator has dispatch off" from "this
+profile has dispatch off" — which is exactly the two-environment mistake this
+runbook opens by warning about.
 
 ### Server-side (the orchestrator decided)
 
@@ -172,7 +204,7 @@ The two sets are deliberately disjoint.
 |---|---|
 | `not_enabled` | Dispatch is off **on the orchestrator**, or the configured mode has no backend driver in this build (see "Modes" below). If you set `DISPATCH_MODE=direct` per profile and see this, you did not set it on the orchestrator — see "Enabling it" above. |
 | `forbidden` | Either provenance could not be resolved (see below), or the request itself is invalid (empty question, a question over 4000 characters, an agent consulting itself). |
-| `unknown_peer` | `to_agent` is not on the roster **this human may reach**. Covers both "no such agent" and "an agent this human has no access to" — deliberately indistinguishable, so a refusal cannot confirm that an agent they can't see exists. |
+| `unknown_peer` | `to_agent` is not on the bench at all — check `AGENTS_JSON`. **Not** a permissions answer: the roster is no longer narrowed by the human's tier (see "Any agent may consult any agent" above), so this means the agent genuinely does not exist. |
 | `peer_not_consult_eligible` | The peer exists, is reachable, but its model's `speed_class` isn't `fast` — see "Consult eligibility" below. |
 | `cap_exceeded` | A consult to that peer for that human is already open (a chain re-entering a peer it is already inside), or the box-wide in-flight limit of 8 concurrent consults is reached. The detail text says which. See "Recursion is bounded server-side" below. |
 | `timeout` | The peer's gateway didn't answer within the mediator's 30s window. |
@@ -183,10 +215,12 @@ The two sets are deliberately disjoint.
 
 | Reason | Meaning |
 |---|---|
+| `dispatch_off_locally` | **This profile** has `DISPATCH_MODE` unset or set to something other than `direct`. Distinct from the server's `not_enabled` on purpose — if you see this one, fix the *profile* env; if you see `not_enabled`, fix the *orchestrator* env. Note `local` and `linear` are valid mode names reserved for later slices and behave as off here, as does any typo. |
 | `orchestrator_auth_failed` | The orchestrator answered 401/403. This profile's `ORCHESTRATOR_KEY` is unset, wrong, or was rotated without restarting the profile. |
-| `orchestrator_unreachable` | Could not connect at all: nothing listening, wrong `ORCHESTRATOR_URL`, or the service is down. |
-| `orchestrator_timeout` | No answer within the plugin's client budget (75s, which exceeds the orchestrator's ~60s worst case). |
-| `orchestrator_error` | The orchestrator answered with some other error status, or the response could not be parsed. The service is up; the route or the request is wrong. |
+| `orchestrator_unreachable` | Could not connect at all: nothing listening, wrong `ORCHESTRATOR_URL`, or the service is down. A timeout during the TCP handshake also lands here rather than on `orchestrator_timeout`. |
+| `orchestrator_timeout` | Connected, but no answer within the client budget (75s, which exceeds the orchestrator's 60s worst case — owner lookup 10 + tier lookup 10 + gateway 30 + audit 10). |
+| `orchestrator_error` | The orchestrator answered with some other HTTP status — 404, 500, anything not 401/403. The service is **up**; the route or the request is wrong. A 404 usually means the orchestrator is running a build without `/v1/dispatch/*`. |
+| `dispatch_error` | The reply could not be read, or a tool was called with missing/unusable arguments. Covers a non-JSON body, a JSON body that isn't an object, and a reply whose shape doesn't match what the endpoint should return — the last of which usually means something *other than the orchestrator* is answering on `ORCHESTRATOR_URL`. |
 
 ## Recursion is bounded server-side
 
