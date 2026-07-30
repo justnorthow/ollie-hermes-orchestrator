@@ -3,7 +3,13 @@ from datetime import date
 import pytest
 
 from src.catalog_check.providers import ScrapeConfig
-from src.catalog_check.sinks import render_report, write_file_sink
+from src.catalog_check.sinks import (
+    LinearConfig,
+    render_report,
+    run_sinks,
+    write_file_sink,
+    write_linear_sink,
+)
 from src.catalog_check.types import Diff, ProviderResult
 
 TODAY = date(2026, 7, 29)
@@ -154,3 +160,122 @@ def test_run_still_writes_report_when_every_provider_fails(tmp_path, monkeypatch
     assert code == 0  # unverifiable alone is not blocking
     assert "Unverifiable" in report
     assert "no network" in report
+
+
+def test_run_appends_escalation_block_after_two_consecutive_unverifiable_runs(
+    tmp_path, monkeypatch
+):
+    """Drives run() twice against the same tmp_path root, so state persists
+    between calls. The provider is unverifiable both times, crossing the
+    escalation threshold on the second run. Asserts on the written report
+    file's contents, not on state internals."""
+    from src.catalog_check.__main__ import run
+
+    monkeypatch.setattr(
+        "src.catalog_check.__main__.SCRAPE_CONFIGS",
+        [ScrapeConfig("openai", "https://example.test/o", r"gpt-[0-9.]+", 1)],
+    )
+    monkeypatch.setattr(
+        "src.catalog_check.__main__.MODELS",
+        [{"provider": "openai", "id": "gpt-5.5", "label": "GPT-5.5",
+          "verified_at": "2026-07-01"}],
+    )
+
+    def boom(url):
+        raise RuntimeError("no network")
+
+    run(tmp_path, TODAY, fetch=boom)
+    code = run(tmp_path, TODAY, fetch=boom)
+
+    report = (tmp_path / "latest.md").read_text(encoding="utf-8")
+    assert code == 0  # unverifiable alone is not blocking
+    assert "## Escalation — unverifiable two runs running" in report
+    assert "`openai`" in report
+    assert "\n\n## Escalation" in report  # blank line separates it, like every other section
+
+
+def test_linear_sink_skipped_when_unconfigured():
+    config = LinearConfig(api_key=None, team_id=None)
+
+    result = write_linear_sink("body", Diff(), config, post=lambda url, payload: {})
+
+    assert result is None
+
+
+def test_linear_sink_not_called_on_clean_run():
+    calls = []
+
+    def post(url, payload):
+        calls.append(payload)
+        return {"data": {"issueCreate": {"issue": {"identifier": "JNO-1"}}}}
+
+    config = LinearConfig(api_key="k", team_id="t")
+    result = write_linear_sink("body", Diff(), config, post=post)
+
+    assert result is None
+    assert calls == []
+
+
+def test_linear_sink_posts_on_drift():
+    def post(url, payload):
+        return {"data": {"issueCreate": {"issue": {"identifier": "JNO-42"}}}}
+
+    config = LinearConfig(api_key="k", team_id="t")
+    diff = Diff(unknown=[("openai", "gpt-old")])
+
+    assert write_linear_sink("body", diff, config, post=post) == "JNO-42"
+
+
+def test_linear_sink_failure_returns_none_and_does_not_raise():
+    def post(url, payload):
+        raise RuntimeError("502 bad gateway")
+
+    config = LinearConfig(api_key="k", team_id="t")
+    diff = Diff(unknown=[("openai", "gpt-old")])
+
+    assert write_linear_sink("body", diff, config, post=post) is None
+
+
+def test_run_sinks_writes_file_even_when_linear_raises(tmp_path):
+    def post(url, payload):
+        raise RuntimeError("502")
+
+    statuses = run_sinks(
+        "body",
+        Diff(unknown=[("openai", "gpt-old")]),
+        tmp_path,
+        TODAY,
+        LinearConfig(api_key="k", team_id="t"),
+        post=post,
+    )
+
+    assert (tmp_path / "latest.md").read_text(encoding="utf-8") == "body"
+    assert statuses["file"] == "written"
+    assert statuses["linear"] == "failed"
+
+
+def test_run_sinks_reports_linear_as_skipped_when_unconfigured(tmp_path):
+    statuses = run_sinks(
+        "body", Diff(), tmp_path, TODAY,
+        LinearConfig(api_key=None, team_id=None),
+        post=lambda url, payload: {},
+    )
+
+    assert statuses["file"] == "written"
+    assert statuses["linear"] == "skipped (not configured)"
+
+
+def test_linear_config_from_env_reads_both_vars(monkeypatch):
+    monkeypatch.setenv("LINEAR_API_KEY", "k")
+    monkeypatch.setenv("LINEAR_TEAM_ID", "t")
+
+    config = LinearConfig.from_env()
+
+    assert config.configured is True
+
+
+def test_linear_config_partial_env_is_not_configured(monkeypatch):
+    monkeypatch.setenv("LINEAR_API_KEY", "k")
+    monkeypatch.delenv("LINEAR_TEAM_ID", raising=False)
+
+    assert LinearConfig.from_env().configured is False

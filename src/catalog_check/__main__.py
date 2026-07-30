@@ -13,7 +13,12 @@ from typing import Callable
 from src.catalog import MODELS
 from src.catalog_check.diff import compute_diff
 from src.catalog_check.providers import SCRAPE_CONFIGS, fetch_all, http_fetch
-from src.catalog_check.sinks import render_report, write_file_sink
+from src.catalog_check.sinks import (
+    LinearConfig,
+    linear_post,
+    render_report,
+    run_sinks,
+)
 from src.catalog_check.state import escalations, load_state, save_state, update_state
 
 DEFAULT_ROOT = Path("docs/model-catalog")
@@ -31,7 +36,7 @@ def run(root: Path, today: date, fetch: Callable[[str], str]) -> int:
     state = update_state(load_state(state_path), diff)
     repeated = escalations(state)
     if repeated:
-        report += "\n".join(
+        report += "\n" + "\n".join(
             [
                 "## Escalation — unverifiable two runs running",
                 "",
@@ -42,7 +47,11 @@ def run(root: Path, today: date, fetch: Callable[[str], str]) -> int:
             ]
         )
 
-    write_file_sink(report, root, today)
+    statuses = run_sinks(
+        report, diff, root, today, LinearConfig.from_env(), post=linear_post
+    )
+    for name, status in sorted(statuses.items()):
+        print(f"sink {name}: {status}")
     save_state(state_path, state)
 
     return 1 if diff.has_blocking_findings else 0

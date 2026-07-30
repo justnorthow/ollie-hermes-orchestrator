@@ -5,8 +5,13 @@ and it needs no external configuration. The Linear sink (added separately) is
 an optional adapter; the check must never fail or go quiet because Linear is
 not in use on a given instance.
 """
+import os
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Callable
+
+import httpx
 
 from src.catalog_check.types import Diff
 
@@ -110,3 +115,95 @@ def write_file_sink(report: str, root: Path, today: date) -> list[Path]:
         path.write_text(report, encoding="utf-8")
 
     return [latest, dated]
+
+
+_LINEAR_URL = "https://api.linear.app/graphql"
+_LINEAR_TIMEOUT = 30.0
+
+_CREATE_ISSUE = """
+mutation IssueCreate($teamId: String!, $title: String!, $description: String!) {
+  issueCreate(input: {teamId: $teamId, title: $title, description: $description}) {
+    issue { identifier }
+  }
+}
+"""
+
+
+@dataclass(frozen=True)
+class LinearConfig:
+    api_key: str | None
+    team_id: str | None
+
+    @classmethod
+    def from_env(cls) -> "LinearConfig":
+        return cls(
+            api_key=os.environ.get("LINEAR_API_KEY") or None,
+            team_id=os.environ.get("LINEAR_TEAM_ID") or None,
+        )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key and self.team_id)
+
+
+def linear_post(url: str, payload: dict) -> dict:
+    """Real Linear transport. Injected only by __main__ so tests stay offline."""
+    response = httpx.post(url, json=payload, timeout=_LINEAR_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+def write_linear_sink(
+    report: str,
+    diff: Diff,
+    config: LinearConfig,
+    post: Callable[[str, dict], dict],
+) -> str | None:
+    """Open an issue when there is drift. Optional: returns None when
+    unconfigured, when there is nothing to report, or on any failure. Never
+    raises — the file sink is the record and must not be affected."""
+    if not config.configured or diff.is_empty:
+        return None
+
+    payload = {
+        "query": _CREATE_ISSUE,
+        "variables": {
+            "teamId": config.team_id,
+            "title": "Model catalog drift detected",
+            "description": report,
+        },
+    }
+    try:
+        body = post(_LINEAR_URL, payload)
+        return body["data"]["issueCreate"]["issue"]["identifier"]
+    except Exception:  # noqa: BLE001 — an optional sink never breaks the run
+        return None
+
+
+def run_sinks(
+    report: str,
+    diff: Diff,
+    root: Path,
+    today: date,
+    linear: LinearConfig,
+    post: Callable[[str, dict], dict],
+) -> dict[str, str]:
+    """Run every sink. The file sink is unconditional and runs first."""
+    statuses: dict[str, str] = {}
+
+    write_file_sink(report, root, today)
+    statuses["file"] = "written"
+
+    if not linear.configured:
+        statuses["linear"] = "skipped (not configured)"
+        return statuses
+
+    identifier = write_linear_sink(report, diff, linear, post=post)
+    if identifier:
+        statuses["linear"] = f"issue {identifier}"
+    elif diff.is_empty:
+        statuses["linear"] = "skipped (no drift)"
+    else:
+        statuses["linear"] = "failed"
+
+    return statuses
