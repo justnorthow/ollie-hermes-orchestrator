@@ -67,10 +67,33 @@ orchestrator with it, and without it every call 401s and comes back as
 `http://127.0.0.1:9123` and only needs setting if the orchestrator is not on
 loopback's default port.
 
-Then:
+> ## ⛔ STOP — the agent side of this cannot be installed yet
+>
+> **`plugins/dispatch/` does not load on Hermes today.** A spike against a live
+> box on 2026-07-30 found that Hermes has no generic tool-plugin category:
+> `get_tool_schemas()` / `handle_tool_call()` / `initialize(session_id)` is the
+> **`MemoryProvider`** contract, and every production implementer lives under
+> `plugins/memory/`. `DispatchProvider` implements that shape but is not
+> registered as a memory provider, so nothing calls it.
+>
+> The supported way to add tools is MCP (`hermes mcp add`) — but an MCP tool
+> call cannot carry the Hermes conversation session id, so it cannot carry
+> provenance, which is the whole basis of this design. That is a design change,
+> not a repackaging.
+>
+> Full findings, with file:line evidence and the three options:
+> `docs/superpowers/specs/2026-07-30-dispatch-plugin-loading-spike.md`.
+>
+> **The orchestrator half below is unaffected and correct.** `/v1/dispatch/*`
+> works for any caller that can present resolvable provenance. Everything in
+> this runbook about modes, refusals, access control, the audit trail and the
+> in-flight bound holds. What does not exist yet is the agent-side client.
+
+Then, once an agent-side client exists:
 
 ```bash
-hermes plugins install   # installs plugins/dispatch/ into the profile
+# NOT YET POSSIBLE — see the stop notice above.
+hermes plugins install <owner/repo>   # takes a repo, not a subdirectory
 # restart that profile's gateway
 ```
 
@@ -90,12 +113,14 @@ and **zero** system-prompt text — an agent's context is byte-identical to a
 box that never had the plugin installed at all (`tests/test_dispatch_off_is_inert.py`
 pins this so a later refactor can't quietly regress it).
 
-**Re-install after `hermes update`.** Tool plugins installed via
-`hermes plugins install` are expected to survive a `hermes update`, unlike
-anything living in hermes-agent's bundled tree (which the update wipes) — but
-this has not yet been observed across a real update on a live box. Treat
-"plugin missing after update" as a known possibility until proven otherwise,
-and re-run `hermes plugins install` if a post-update check shows it gone.
+**Installed plugins survive `hermes update` — confirmed 2026-07-30.** No
+re-install step is needed. `hermes plugins install` puts a plugin in
+`~/.hermes/plugins`, which is outside `~/.hermes/hermes-agent` — the upstream
+git checkout that `hermes update` pulls. This is the opposite of memory-provider
+plugins like Cortex, which are copied *into* the agent tree and are wiped, and
+it means the `07-patch-cron-brain.sh` re-patch tax does not apply here.
+
+(Evidence: `hermes_cli/plugins_cmd.py:76`. See the spike doc for detail.)
 
 ## Refusal reasons
 
