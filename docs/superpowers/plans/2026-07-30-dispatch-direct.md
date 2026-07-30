@@ -1436,6 +1436,18 @@ def consult(body: ConsultBody, request: Request):
             peer=req.to_agent,
         ).__dict__
 
+    # Mode is checked before any roster or port lookup, so no code path can
+    # reach a gateway when dispatch is disabled. Task 8 asserts this.
+    mode = current_mode()
+    if mode == MODE_OFF:
+        refusal = ConsultResult.refused(
+            REASON_NOT_ENABLED,
+            "dispatch is disabled on this instance (DISPATCH_MODE=off)",
+            peer=req.to_agent,
+        )
+        record_consult(req, refusal, origin, instance_id, post=_audit_post)
+        return refusal.__dict__
+
     refusal = check(req, _roster_for(req.from_agent), origin, caps=Caps())
     if refusal is not None:
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
@@ -1449,14 +1461,14 @@ def consult(body: ConsultBody, request: Request):
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
         return refusal.__dict__
 
-    backend = backend_for(current_mode())
-    result = backend(req, port, _gateway_key(), post=_post,
-                     timeout=_GATEWAY_TIMEOUT) \
-        if current_mode() != MODE_OFF else backend(req, port, _gateway_key())
-
+    result = backend_for(mode)(req, port, _gateway_key(), post=_post,
+                               timeout=_GATEWAY_TIMEOUT)
     record_consult(req, result, origin, instance_id, post=_audit_post)
     return result.__dict__
 ```
+
+Note the import list above already includes `REASON_NOT_ENABLED` — add it if you are
+transcribing the imports separately.
 
 Then register it in `src/api/main.py`. Add the import alongside the other router imports, and the `include_router` call after `sessions_router` (line 66):
 
@@ -1914,48 +1926,22 @@ def test_consult_in_off_mode_never_reaches_a_gateway(monkeypatch, fake_env):
     assert r.json()["reason"] == "not_enabled"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run the test — it should PASS immediately**
 
 Run: `/d/workspaces/jnow/ollie-hermes-orchestrator/.venv/Scripts/python.exe -m pytest tests/test_dispatch_off_is_inert.py -v`
-Expected: FAIL — the `off`-mode consult path is not yet wired to short-circuit before `port_for`, so the last test fails on a missing peer rather than `not_enabled`.
+Expected: PASS — 4 passed.
 
-- [ ] **Step 3: Make `off` short-circuit before any peer lookup**
+This is deliberately not a red-then-green task. Task 6 already put the mode check
+ahead of every roster and port lookup, and Task 7 already made `off` contribute no
+schemas. These tests exist to **pin** that behaviour so a later refactor cannot
+quietly undo it — they are the acceptance test protecting the live Towns and jnow
+prod boxes.
 
-In `src/api/dispatch.py`'s `consult()`, move the mode check ahead of the port lookup. Replace the block from `port = port_for(...)` through the `backend(...)` call with:
+If any of them fails, do not adjust the test to match the code. Stop and report:
+a failure here means an agent on an existing box would see its context change, and
+that is a blocking defect rather than a test to reconcile.
 
-```python
-    mode = current_mode()
-    if mode == MODE_OFF:
-        refusal = ConsultResult.refused(
-            REASON_NOT_ENABLED,
-            "dispatch is disabled on this instance (DISPATCH_MODE=off)",
-            peer=req.to_agent,
-        )
-        record_consult(req, refusal, origin, instance_id, post=_audit_post)
-        return refusal.__dict__
-
-    port = port_for(req.to_agent)
-    if port is None:
-        refusal = ConsultResult.refused(
-            REASON_FORBIDDEN, "peer has no gateway port", peer=req.to_agent
-        )
-        record_consult(req, refusal, origin, instance_id, post=_audit_post)
-        return refusal.__dict__
-
-    result = backend_for(mode)(req, port, _gateway_key(), post=_post,
-                               timeout=_GATEWAY_TIMEOUT)
-    record_consult(req, result, origin, instance_id, post=_audit_post)
-    return result.__dict__
-```
-
-Add `REASON_NOT_ENABLED` to the imports from `src.dispatch.types`.
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `/d/workspaces/jnow/ollie-hermes-orchestrator/.venv/Scripts/python.exe -m pytest tests/test_dispatch_off_is_inert.py tests/test_api_dispatch.py -v`
-Expected: PASS — both files
-
-- [ ] **Step 5: Write the runbook**
+- [ ] **Step 3: Write the runbook**
 
 Create `docs/runbooks/agent-dispatch.md`. Match the tone of the existing runbooks in that directory. Cover:
 
@@ -1967,22 +1953,23 @@ Create `docs/runbooks/agent-dispatch.md`. Match the tone of the existing runbook
 - **Provenance is fail-closed.** If the session id the plugin holds does not match `agent_sessions.hermes_session_id`, every consult is refused with `forbidden`. That is the expected symptom of the open spike in the spec — if every consult refuses with `forbidden` on a freshly enabled box, this is the first thing to check.
 - Where the audit trail lands: `governance_events`, `app='dispatch'`, one row per attempt including refusals. Answers are not recorded, by design.
 
-- [ ] **Step 6: Run the full suite**
+- [ ] **Step 4: Run the full suite**
 
 Run: `/d/workspaces/jnow/ollie-hermes-orchestrator/.venv/Scripts/python.exe -m pytest tests/ -q`
 Expected: baseline plus all new tests. Paste the literal line pytest printed.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/api/dispatch.py docs/runbooks/agent-dispatch.md tests/test_dispatch_off_is_inert.py
-git commit -m "feat(dispatch): off short-circuits before peer lookup; add runbook
+git add docs/runbooks/agent-dispatch.md tests/test_dispatch_off_is_inert.py
+git commit -m "test(dispatch): pin off-mode inertness; add operator runbook
 
-off mode now refuses before any roster or port lookup, so no code path can
-reach a gateway when dispatch is disabled. Runbook documents the
-fail-closed provenance symptom: if every consult refuses with 'forbidden'
-on a freshly enabled box, the plugin's session id does not match
-agent_sessions -- which is the open spike in the spec."
+These tests pin behaviour Tasks 6 and 7 already implement, so a later
+refactor cannot quietly change what an agent on an existing box sees.
+
+Runbook documents the fail-closed provenance symptom: if every consult
+refuses with 'forbidden' on a freshly enabled box, the plugin's session id
+does not match agent_sessions -- the open spike in the spec."
 ```
 
 ---
