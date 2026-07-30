@@ -229,17 +229,19 @@ git commit -m "feat(catalog): per-provider id format rules and catalog validatio
 
 ---
 
-### Task 2: Wire validation to the real catalog — exposes the malformed ids
+### Task 2: Validate the live catalog and fix the malformed ids
 
-This task is expected to produce a **failing** test against the current catalog. That failure is the bug the spec exists to catch. Task 3 fixes it.
+Standard TDD: the test fails against the current catalog because two Anthropic ids
+are malformed, then the fix in the same task makes it pass. One green commit.
 
 **Files:**
 - Create: `tests/fixtures/known_models.json`
 - Modify: `tests/test_catalog_rules.py` (append)
+- Modify: `src/catalog.py:1-6`
 
 **Interfaces:**
 - Consumes: `id_format_errors`, `validate_catalog` from Task 1; `src.catalog.MODELS`.
-- Produces: `tests/fixtures/known_models.json` — a `{provider: [id, ...]}` map that Task 5's diff engine also reads as its offline baseline.
+- Produces: `tests/fixtures/known_models.json` — a `{provider: [id, ...]}` map that Task 4's diff engine also reads as its offline baseline.
 
 - [ ] **Step 1: Create the known-model fixture**
 
@@ -304,37 +306,11 @@ def test_live_catalog_is_valid():
 - [ ] **Step 3: Run the test and confirm it fails on the real defect**
 
 Run: `python -m pytest tests/test_catalog_rules.py::test_live_catalog_is_valid -v`
-Expected: FAIL. The output must name both malformed Anthropic ids — `claude-sonnet-4.6` and `claude-opus-4.7` — each flagged twice (format rule + absent from known list). If the failure message says anything else, stop and investigate before proceeding.
+Expected: FAIL. The output must name both malformed Anthropic ids — `claude-sonnet-4.6`
+and `claude-opus-4.7` — each flagged twice (format rule + absent from known list). If the
+failure message says anything else, stop and investigate before proceeding.
 
-- [ ] **Step 4: Commit the failing test**
-
-Commit the test and fixture *before* the fix, so the defect is recorded in history rather than silently corrected.
-
-```bash
-git add tests/fixtures/known_models.json tests/test_catalog_rules.py
-git commit -m "test(catalog): assert live catalog ids are valid (currently failing)
-
-The two Anthropic entries use dots where provider ids use hyphens:
-claude-sonnet-4.6 / claude-opus-4.7. 03-install-profile.sh writes the
-catalog string straight into Hermes model.default, so these reach the
-provider verbatim and 404. Latent today because the boxes run
-openai-codex/gpt-5.5, but both are offered in the dashboard picker.
-
-Fix follows in the next commit."
-```
-
----
-
-### Task 3: Fix the malformed ids and refresh the Anthropic line
-
-**Files:**
-- Modify: `src/catalog.py:1-6`
-
-**Interfaces:**
-- Consumes: the failing test from Task 2.
-- Produces: a `MODELS` literal whose every id passes `validate_catalog`.
-
-- [ ] **Step 1: Replace the Anthropic entries**
+- [ ] **Step 4: Fix the malformed ids in `src/catalog.py`**
 
 In `src/catalog.py`, replace the `MODELS` list. The two dotted ids are corrected and the Anthropic line is brought current; `gpt-5.5` and `llama-3.3-70b` are unchanged pending confirmation of the GPT-5.6 ids:
 
@@ -354,34 +330,38 @@ MODELS = [
 
 Note: `claude-fable-5` is deliberately **not** offered. Per the spec it requires 30-day data retention and 400s every request from a zero-data-retention org, cannot have thinking disabled, and can run multi-minute turns — it is not a safe default picker option.
 
-- [ ] **Step 2: Run the previously-failing test**
+- [ ] **Step 5: Run the test again — it must now pass**
 
 Run: `python -m pytest tests/test_catalog_rules.py -v`
 Expected: PASS — all tests including `test_live_catalog_is_valid`
 
-- [ ] **Step 3: Run the existing catalog API test for regressions**
+- [ ] **Step 6: Run the existing catalog API test for regressions**
 
 Run: `python -m pytest tests/test_api_catalog.py -v`
 Expected: PASS — the endpoint shape is unchanged
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/catalog.py
+git add tests/fixtures/known_models.json tests/test_catalog_rules.py src/catalog.py
 git commit -m "fix(catalog): correct malformed Anthropic model ids
 
-claude-sonnet-4.6 -> the hyphenated current line. Provider ids use
-hyphens; the dotted forms would 404. Also drops the retired 4.x entries
-in favour of Opus 5 / Sonnet 5 / Haiku 4.5.
+The two Anthropic entries used dots where provider ids use hyphens:
+claude-sonnet-4.6 / claude-opus-4.7. 03-install-profile.sh writes the catalog
+string straight into Hermes model.default, so these reached the provider
+verbatim and 404. Latent because the boxes run openai-codex/gpt-5.5, but both
+were offered in the dashboard picker.
 
-Fable 5 is intentionally not offered: it requires 30-day data retention
-(400s on ZDR orgs), cannot have thinking disabled, and can run
-multi-minute turns."
+Adds a known-model fixture and a test asserting every catalog id is real, so
+the next occurrence fails in CI instead of reaching a customer. Also drops the
+retired 4.x entries for Opus 5 / Sonnet 5 / Haiku 4.5. Fable 5 is intentionally
+not offered: it requires 30-day retention (400s on ZDR orgs), cannot have
+thinking disabled, and can run multi-minute turns."
 ```
 
 ---
 
-### Task 4: Result and diff types
+### Task 3: Result and diff types
 
 **Files:**
 - Create: `src/catalog_check/__init__.py`
@@ -502,14 +482,14 @@ git commit -m "feat(catalog-check): result and diff types"
 
 ---
 
-### Task 5: Diff engine
+### Task 4: Diff engine
 
 **Files:**
 - Create: `src/catalog_check/diff.py`
 - Modify: `tests/test_catalog_diff.py` (append)
 
 **Interfaces:**
-- Consumes: `ProviderResult`, `Diff` from Task 4.
+- Consumes: `ProviderResult`, `Diff` from Task 3.
 - Produces: `compute_diff(models: list[dict], results: list[ProviderResult], today: date, stale_after_days: int = 365) -> Diff`
 
 - [ ] **Step 1: Write the failing test**
@@ -719,14 +699,14 @@ failed fetch as an empty model list would mark every catalog id retired."
 
 ---
 
-### Task 6: Provider scrapers with a minimum-count guard
+### Task 5: Provider scrapers with a minimum-count guard
 
 **Files:**
 - Create: `src/catalog_check/providers.py`
 - Test: `tests/test_catalog_providers.py`
 
 **Interfaces:**
-- Consumes: `ProviderResult`, `MECHANISM_SCRAPE`, `MECHANISM_NONE` from Task 4.
+- Consumes: `ProviderResult`, `MECHANISM_SCRAPE`, `MECHANISM_NONE` from Task 3.
 - Produces:
   - `ScrapeConfig(provider: str, url: str, pattern: str, min_models: int)`
   - `SCRAPE_CONFIGS: list[ScrapeConfig]`
@@ -940,14 +920,14 @@ broken scrape from reading as mass retirement."
 
 ---
 
-### Task 7: File sink
+### Task 6: File sink
 
 **Files:**
 - Create: `src/catalog_check/sinks.py`
 - Test: `tests/test_catalog_sinks.py`
 
 **Interfaces:**
-- Consumes: `Diff`, `ProviderResult` from Task 4.
+- Consumes: `Diff`, `ProviderResult` from Task 3.
 - Produces:
   - `render_report(diff: Diff, today: date, mechanisms: dict[str, str]) -> str`
   - `write_file_sink(report: str, root: Path, today: date) -> list[Path]`
@@ -1171,7 +1151,7 @@ git commit -m "feat(catalog-check): report rendering and unconditional file sink
 
 ---
 
-### Task 8: Schema extension — metadata fields on catalog entries
+### Task 7: Schema extension — metadata fields on catalog entries
 
 **Files:**
 - Modify: `src/catalog.py`
@@ -1299,14 +1279,14 @@ run flags them rather than presenting a guess as fact."
 
 ---
 
-### Task 9: Escalation state — two consecutive unverifiable runs
+### Task 8: Escalation state — two consecutive unverifiable runs
 
 **Files:**
 - Create: `src/catalog_check/state.py`
 - Test: `tests/test_catalog_state.py`
 
 **Interfaces:**
-- Consumes: `Diff` from Task 4.
+- Consumes: `Diff` from Task 3.
 - Produces:
   - `load_state(path: Path) -> dict[str, int]`
   - `update_state(previous: dict[str, int], diff: Diff) -> dict[str, int]`
@@ -1442,14 +1422,14 @@ git commit -m "feat(catalog-check): escalate a provider unverifiable twice runni
 
 ---
 
-### Task 10: CLI entry point
+### Task 9: CLI entry point
 
 **Files:**
 - Create: `src/catalog_check/__main__.py`
 - Modify: `tests/test_catalog_sinks.py` (append)
 
 **Interfaces:**
-- Consumes: everything from Tasks 4–9.
+- Consumes: everything from Tasks 3–8.
 - Produces: `run(root: Path, today: date, fetch: Callable[[str], str]) -> int` — returns the process exit code. `main()` wires the real fetcher and calls `sys.exit`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1457,7 +1437,7 @@ git commit -m "feat(catalog-check): escalate a provider unverifiable twice runni
 Append to `tests/test_catalog_sinks.py`.
 
 First, an autouse fixture. `run()` reads Linear credentials from the environment
-once Task 12 lands, and a developer or CI runner that happens to export
+once Task 11 lands, and a developer or CI runner that happens to export
 `LINEAR_API_KEY` would turn these tests into live network calls. The Global
 Constraint is that every test runs offline with no credentials, so isolate the
 environment for the whole module rather than relying on it being unset:
@@ -1634,13 +1614,13 @@ than silent."
 
 ---
 
-### Task 11: GitHub Actions weekly workflow
+### Task 10: GitHub Actions weekly workflow
 
 **Files:**
 - Create: `.github/workflows/model-catalog-check.yml`
 
 **Interfaces:**
-- Consumes: `python -m src.catalog_check` from Task 10.
+- Consumes: `python -m src.catalog_check` from Task 9.
 - Produces: a weekly scheduled run that commits the report and fails the job on blocking findings.
 
 - [ ] **Step 1: Write the workflow**
@@ -1734,7 +1714,7 @@ This repo had no `.github/workflows/` before this task, so Actions may be disabl
 
 ---
 
-### Task 12: Linear sink as an optional adapter
+### Task 11: Linear sink as an optional adapter
 
 **Files:**
 - Modify: `src/catalog_check/sinks.py`
@@ -1742,7 +1722,7 @@ This repo had no `.github/workflows/` before this task, so Actions may be disabl
 - Modify: `tests/test_catalog_sinks.py` (append)
 
 **Interfaces:**
-- Consumes: `render_report` output from Task 7; `Diff` from Task 4.
+- Consumes: `render_report` output from Task 6; `Diff` from Task 3.
 - Produces:
   - `LinearConfig(api_key: str | None, team_id: str | None)` with `LinearConfig.from_env() -> LinearConfig` and `.configured -> bool`
   - `write_linear_sink(report: str, diff: Diff, config: LinearConfig, post: Callable[[str, dict], dict]) -> str | None` — returns the issue identifier, or `None` when unconfigured or on failure.
@@ -1981,7 +1961,7 @@ Remove the now-unused `write_file_sink` import.
 - [ ] **Step 5: Run the full catalog suite**
 
 Run: `python -m pytest tests/ -v -k catalog`
-Expected: PASS — every catalog test. Note that `test_run_*` tests from Task 10 still pass because `LinearConfig.from_env()` is unconfigured in the test environment, so the Linear sink is skipped.
+Expected: PASS — every catalog test. Note that `test_run_*` tests from Task 9 still pass because `LinearConfig.from_env()` is unconfigured in the test environment, so the Linear sink is skipped.
 
 - [ ] **Step 6: Commit**
 
@@ -2000,7 +1980,7 @@ file sink from writing -- the check must not depend on Linear being in use."
 
 ### GPT-5.6 catalog entries
 
-**Blocked on:** the literal OpenAI API id strings for the Sol / Terra / Luna tiers. These were not confirmable from public pricing pages, and guessing them would reintroduce exactly the defect Task 3 fixes. Authoritative local sources: the Codex setup in use, or `~/.hermes/config.yaml` on a provisioned box.
+**Blocked on:** the literal OpenAI API id strings for the Sol / Terra / Luna tiers. These were not confirmable from public pricing pages, and guessing them would reintroduce exactly the defect Task 2 fixes. Authoritative local sources: the Codex setup in use, or `~/.hermes/config.yaml` on a provisioned box.
 
 Once the ids are known, this is a data-only change — no new code:
 
@@ -2019,19 +1999,19 @@ Once the ids are known, this is a data-only change — no new code:
 
 | Spec section | Task |
 |---|---|
-| §1 Validation test — highest-value assertion | Tasks 1, 2, 3 |
-| §2 Weekly freshness job, four diff categories, exit code | Tasks 5, 10, 11 |
-| §3 Report sinks — file unconditional, Linear optional | Tasks 7, 12 |
-| §4 Adoption stays manual + checklist | Task 7 (`_ADOPTION_CHECKLIST`) |
-| §5 Scrape primary, no API key in CI, mechanism recorded | Tasks 6, 7, 11 |
-| §6 Catalog schema extension | Task 8 |
-| Risks — scrape fragility, min-count, 2-run escalation | Tasks 6, 9 |
-| Risks — fixture drift validated against live list | Task 2 + Task 5 `new` category |
+| §1 Validation test — highest-value assertion | Tasks 1 and 2 |
+| §2 Weekly freshness job, four diff categories, exit code | Tasks 4, 9, 10 |
+| §3 Report sinks — file unconditional, Linear optional | Tasks 6, 11 |
+| §4 Adoption stays manual + checklist | Task 6 (`_ADOPTION_CHECKLIST`) |
+| §5 Scrape primary, no API key in CI, mechanism recorded | Tasks 5, 6, 10 |
+| §6 Catalog schema extension | Task 7 |
+| Risks — scrape fragility, min-count, 2-run escalation | Tasks 5, 8 |
+| Risks — fixture drift validated against live list | Task 2 + Task 4 `new` category |
 | Testing — all offline, injected fetchers/writers | every task |
-| Slice 1 — fix ids, refresh, schema fields | Tasks 3, 8 (+ GPT-5.6 deferred) |
+| Slice 1 — fix ids, refresh, schema fields | Tasks 2, 7 (+ GPT-5.6 deferred) |
 
 Two spec items intentionally **not** implemented as code: the optional attended API-fetch path (§5 mechanism 2) is left for when a key exists — `compute_diff` already accepts any `ProviderResult` regardless of mechanism, so it needs no change to support it; and the `Changed` category, which is unevaluable under scraping alone and is covered by reporting `unverifiable` plus the mechanism section.
 
 **Placeholder scan:** no TBDs, no "add error handling", no "similar to Task N". Every code step carries runnable code. The one deferred item is explicitly separated with its blocking input named.
 
-**Type consistency:** `ProviderResult` / `Diff` field names are consistent across Tasks 4–12. `compute_diff` signature matches its call in `__main__`. `render_report(diff, today, mechanisms)` matches. `write_file_sink(report, root, today)` matches, and Task 12 supersedes the direct call with `run_sinks` while keeping `write_file_sink`'s own signature and tests intact. `id_format_errors` / `validate_catalog` are used with the same signatures in Tasks 1, 2, and 8. `LinearConfig.configured` is a property in both the implementation and the tests.
+**Type consistency:** `ProviderResult` / `Diff` field names are consistent across Tasks 3–11. `compute_diff` signature matches its call in `__main__`. `render_report(diff, today, mechanisms)` matches. `write_file_sink(report, root, today)` matches, and Task 11 supersedes the direct call with `run_sinks` while keeping `write_file_sink`'s own signature and tests intact. `id_format_errors` / `validate_catalog` are used with the same signatures in Tasks 1, 2, and 7. `LinearConfig.configured` is a property in both the implementation and the tests.
