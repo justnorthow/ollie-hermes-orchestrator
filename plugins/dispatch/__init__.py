@@ -1,3 +1,3 @@
-from plugins.dispatch.provider import DispatchProvider
+from .provider import DispatchProvider
 
 __all__ = ["DispatchProvider"]

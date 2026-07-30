@@ -10,7 +10,7 @@ text, so an agent's context is byte-identical to a box without it installed.
 import json
 import os
 
-from plugins.dispatch.http_client import DispatchHttpClient
+from .http_client import DispatchHttpClient
 
 _PROMPT_BLOCK = """\
 You can consult teammate agents on this box.
@@ -30,6 +30,16 @@ Rules that are not negotiable:
 
 
 class DispatchProvider:
+    # Modes this plugin actually implements a tool-call path for. Anything else
+    # -- typos, or a real-but-not-yet-implemented mode like "local"/"linear" --
+    # behaves as off from the plugin's perspective, even though the server would
+    # accept it as a VALID_MODES value and refuse each call with not_enabled.
+    # Advertising tools for a mode we can't drive would mean every call the
+    # agent makes gets refused server-side, having led it on client-side.
+    # Deliberately not imported from src/: the plugin must stand alone on a
+    # Hermes box where the orchestrator package is not importable.
+    _IMPLEMENTED_MODES = frozenset({"direct"})
+
     def __init__(self):
         self._session_id = ""
         self._client = DispatchHttpClient()
@@ -44,9 +54,10 @@ class DispatchProvider:
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = session_id
 
-    @staticmethod
-    def _mode() -> str:
-        return os.environ.get("DISPATCH_MODE", "off").strip() or "off"
+    @classmethod
+    def _mode(cls) -> str:
+        raw = os.environ.get("DISPATCH_MODE", "off").strip() or "off"
+        return raw if raw in cls._IMPLEMENTED_MODES else "off"
 
     @staticmethod
     def _agent_id() -> str:
@@ -94,6 +105,17 @@ class DispatchProvider:
         ]
 
     def handle_tool_call(self, name: str, args: dict) -> str:
+        # Self-gated, not just unadvertised: get_tool_schemas()/system_prompt_block()
+        # hide the tools in off mode, but a stale client-side tool cache or a host
+        # bug can still invoke handle_tool_call directly. Refusing here -- before
+        # any HTTP call -- is what makes the module docstring's "byte-identical to
+        # a box without it installed" claim true rather than aspirational.
+        if self._mode() == "off":
+            return json.dumps({
+                "ok": False,
+                "reason": "not_enabled",
+                "detail": "dispatch is disabled on this instance (DISPATCH_MODE=off)",
+            })
         if name == "list_teammates":
             return self._list_teammates()
         if name == "ask_teammate":
