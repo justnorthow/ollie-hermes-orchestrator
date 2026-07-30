@@ -1,7 +1,5 @@
 from datetime import date
 
-import pytest
-
 from src.catalog_check.diff import compute_diff
 from src.catalog_check.types import Diff, ProviderResult
 
@@ -143,3 +141,26 @@ def test_provider_serving_no_models_is_available_and_retires_its_catalog_ids():
     assert results[0].available is True
     assert d.unknown == [("openai", "gpt-5.5")]
     assert d.unverifiable == []
+
+
+def test_duplicate_provider_results_do_not_produce_contradictory_diff():
+    """If results contain two entries for the same provider (e.g., a failed and
+    successful fetch), the diff must be self-consistent: aggregation must deduplicate
+    consistently. The provider should not appear in both unverifiable and with a
+    clean unknown list."""
+    models = _catalog(("openai", "gpt-5.5", {"verified_at": "2026-07-01"}))
+    # Two entries for openai: one failed (None models), one succeeded (with gpt-5.5).
+    # Last-wins deduplication keeps the successful one.
+    results = [
+        ProviderResult("openai", None, "none", "first attempt failed"),
+        ProviderResult("openai", frozenset({"gpt-5.5"}), "scrape"),
+    ]
+
+    d = compute_diff(models, results, TODAY)
+
+    # Provider should not appear in unverifiable (last-wins keeps the successful result)
+    assert [r.provider for r in d.unverifiable] == []
+    # Catalog id should not be marked unknown (it's in the successful result)
+    assert d.unknown == []
+    # Overall result should be clean
+    assert d.is_empty is True

@@ -38,7 +38,7 @@ def compute_diff(
             ProviderResult(provider, None, "none", "no fetch result for provider")
         )
 
-    for result in results:
+    for result in by_provider.values():
         if not result.available:
             diff.unverifiable.append(result)
 
@@ -56,7 +56,7 @@ def compute_diff(
             diff.stale.append((provider, model_id, verified.isoformat()))
 
     catalogued = {(m["provider"], m["id"]) for m in models}
-    for result in results:
+    for result in by_provider.values():
         if not result.available:
             continue
         for model_id in sorted(result.model_ids):
