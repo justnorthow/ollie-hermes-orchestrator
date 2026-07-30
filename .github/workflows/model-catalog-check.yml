@@ -1,0 +1,70 @@
+name: Model catalog check
+
+# Weekly. Vendor launch cadence has been far faster than monthly, and the
+# check needs no credentials — it scrapes public docs pages, because OAuth
+# tokens cannot be held by an unattended job.
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC — off the hour to avoid runner contention
+  workflow_dispatch:
+
+permissions:
+  contents: write          # to commit the report — the only write this job needs
+  # No issues: write. The optional sink posts to Linear's own API with its own
+  # token, not to GitHub issues, so granting issue permissions here would be
+  # privilege the job never exercises.
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the offline validation suite first
+        # If the catalog is internally invalid, the drift report is noise.
+        run: python -m pytest tests/test_catalog_rules.py -v
+
+      - name: Check catalog against provider docs
+        # Exit codes from `main()`: 0 clean, 1 blocking findings (an unknown
+        # catalog id), 2 the check itself failed unexpectedly (bug, I/O
+        # error). Captured explicitly rather than via `continue-on-error` +
+        # `steps.check.outcome`, because that pair collapses every non-zero
+        # exit to the same "failure" outcome and cannot tell "1 blocking
+        # finding" apart from "2 internal crash" — see the final gate below.
+        id: check
+        run: |
+          set +e
+          python -m src.catalog_check --root docs/model-catalog
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit the report
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/model-catalog
+          if git diff --cached --quiet; then
+            echo "No report change to commit."
+          else
+            git commit -m "chore(catalog): weekly model catalog report"
+            git push
+          fi
+
+      - name: Fail if blocking findings
+        run: |
+          code="${{ steps.check.outputs.exit_code }}"
+          if [ "$code" = "1" ]; then
+            echo "::error::Catalog contains unknown model ids — see docs/model-catalog/latest.md"
+            exit 1
+          elif [ "$code" != "0" ]; then
+            echo "::error::Catalog check step itself failed (exit $code) — read the 'Check catalog against provider docs' log above, not latest.md"
+            exit 1
+          fi
