@@ -113,14 +113,26 @@ and **zero** system-prompt text — an agent's context is byte-identical to a
 box that never had the plugin installed at all (`tests/test_dispatch_off_is_inert.py`
 pins this so a later refactor can't quietly regress it).
 
-**Installed plugins survive `hermes update` — confirmed 2026-07-30.** No
-re-install step is needed. `hermes plugins install` puts a plugin in
-`~/.hermes/plugins`, which is outside `~/.hermes/hermes-agent` — the upstream
-git checkout that `hermes update` pulls. This is the opposite of memory-provider
-plugins like Cortex, which are copied *into* the agent tree and are wiped, and
-it means the `07-patch-cron-brain.sh` re-patch tax does not apply here.
+**Plugins survive `hermes update` — confirmed 2026-07-30.** No re-install step
+is needed, for either kind of plugin:
 
-(Evidence: `hermes_cli/plugins_cmd.py:76`. See the spike doc for detail.)
+- `hermes plugins install` puts a plugin in `~/.hermes/plugins`, outside the
+  `~/.hermes/hermes-agent` git checkout that `hermes update` pulls
+  (`hermes_cli/plugins_cmd.py:76`).
+- A *vendored* plugin inside the agent tree (like Cortex at
+  `plugins/memory/cortex/`) is untracked there, and the update stashes with
+  `git stash push --include-untracked` (`update_cmd.py:851`) and restores it.
+  There is no `git clean` anywhere in the update path.
+
+The `07-patch-cron-brain.sh` re-patch tax applies to **patches of tracked
+upstream files**, which can conflict with an incoming pull — not to plugins. On
+the JNOW box that is currently two files, `cron/scheduler.py` and `run_agent.py`.
+
+One thing to leave alone: both boxes run
+`updates.non_interactive_local_changes: stash`. Setting it to `discard` drops
+the stash instead of restoring it, which **would** delete a vendored plugin.
+
+(See the spike doc for full evidence.)
 
 ## Refusal reasons
 

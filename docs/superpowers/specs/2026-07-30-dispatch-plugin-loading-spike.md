@@ -18,13 +18,41 @@ and reinstall dependencies").
 
 So an installed plugin is not in the tree that gets updated, and survives.
 
-This is the opposite of memory-provider plugins like Cortex, which are copied
-*into* the agent tree (`~/.hermes/hermes-agent/plugins/memory/cortex/`) and are
-wiped. The `07-patch-cron-brain.sh` tax does not apply to installed plugins.
+### Vendored plugins survive too — the "memory plugins get wiped" belief is wrong
 
-The cron-brain tax is real and currently active, incidentally: `git status` on
-`~/.hermes/hermes-agent` shows ` M cron/scheduler.py` sitting as an uncommitted
-local modification right now.
+An earlier version of this document said memory-provider plugins like Cortex are
+copied into the agent tree and wiped by `hermes update`. **That is incorrect**,
+and it mattered because it was being used to cost an option.
+
+`hermes update` runs `git stash push --include-untracked` (`update_cmd.py:851`),
+pulls, then restores the stash. Cortex is **untracked** in that repo —
+`git status --porcelain plugins/memory/` reports `?? plugins/memory/cortex/` on
+both the sandbox and the JNOW box. It goes into the stash and comes back out.
+Nothing upstream owns that path, so there is nothing for it to conflict with.
+
+There is no `git clean` anywhere in the update path. The only mention of
+`git clean -fd` in `update_cmd.py` is a docstring at line 1101 explaining what
+the code deliberately does *not* do.
+
+**The distinction that actually matters:**
+
+| Kind of local change | On update | Example |
+|---|---|---|
+| Untracked addition (a vendored plugin directory) | Stashed, pulled, restored. No conflict possible. **Survives.** | `plugins/memory/cortex/` |
+| Tracked file with local edits (a patch) | Stashed, pulled, re-applied — **can conflict** with incoming upstream changes | `cron/scheduler.py` |
+
+The re-patch tax is real but belongs to *patches of upstream files*, not to
+vendored plugins. On the JNOW box it is currently **two** files, not the one that
+`07-patch-cron-brain.sh` documents: `git status` shows ` M cron/scheduler.py`
+and ` M run_agent.py`.
+
+Two caveats keep this from being a blanket guarantee:
+
+- Both boxes are set to `updates.non_interactive_local_changes: stash`. Set to
+  `discard`, the stash is dropped instead of re-applied and an untracked plugin
+  **would** be deleted. That setting is what protects it.
+- `update_cmd.py:942-969` has explicit handling for "could not restore untracked
+  files from stash", so a partial restore failure is a known real case.
 
 ## 2. There is NO generic tool-plugin category — this breaks `plugins/dispatch/`
 
