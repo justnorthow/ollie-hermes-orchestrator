@@ -51,7 +51,23 @@ class ConsultRequest:
     session_id: str
     to_agent: str
     question: str
-    #: agent ids already in this chain, for cycle detection and the hop cap
+    #: Agent ids already in this chain, for the audit trail and for the cycle /
+    #: hop tests in authority.check().
+    #:
+    #: DIVERGENCE FROM THE SPEC, DELIBERATE. The design doc (§2) shapes this as
+    #: ["John", "billie", "karl-m"] -- the *human* at index 0, agents after. The
+    #: code here treats EVERY element as an agent id (the cycle test is
+    #: `to_agent in chain`, and `len(chain)` is counted as a hop count). Adopting
+    #: the spec's shape later without changing authority.check() would silently
+    #: turn a hop cap of 3 into an effective cap of 2 and would let a chain
+    #: "cycle" on an agent whose id happened to match the human's name. If the
+    #: spec's shape is adopted, change authority.check() in the same commit.
+    #:
+    #: Note also that chain is caller-asserted and therefore NOT a security
+    #: control: the plugin cannot be made to propagate it honestly, so recursion
+    #: is bounded server-side by src/dispatch/inflight.py instead. This field is
+    #: retained for the audit trail and is length-bounded at the API boundary
+    #: (src/api/dispatch.py) before it is written to governance_events.
     chain: tuple[str, ...] = ()
 
 

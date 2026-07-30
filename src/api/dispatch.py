@@ -5,10 +5,10 @@ provenance resolvable rather than asserted: this module derives the human from
 `agent_sessions` and the caller has no way to influence the answer.
 
 This module is also the only place the pure logic in src/dispatch/ is wired to
-the orchestrator's own rules — `can_reach` from src/api/authz.py decides whose
-peers a human may see at all, and is injected into the roster rather than
-imported by src/dispatch/, which keeps that package free of src/api/ and of the
-network-capable modules it pulls in.
+the orchestrator's own rules — `can_reach` from src/api/authz.py (whose peers a
+human may see at all) and the process-wide in-flight registry (how deep a
+consult chain may go). Both are injected rather than imported by src/dispatch/,
+which keeps that package free of src/api/ and of network-capable modules.
 """
 import logging
 import os
@@ -27,9 +27,11 @@ from src.catalog import MODELS
 from src.dispatch.audit import record_consult
 from src.dispatch.authority import Caps, check, resolve_origin
 from src.dispatch.backends import backend_for
+from src.dispatch.inflight import InFlight
 from src.dispatch.roster import build_roster, visible_to
 from src.dispatch.types import (
     MODE_OFF,
+    REASON_CAP_EXCEEDED,
     REASON_FORBIDDEN,
     REASON_MISCONFIGURED,
     REASON_NOT_ENABLED,
@@ -43,6 +45,18 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(tags=["dispatch"], dependencies=[Depends(require_bearer)])
 
 _GATEWAY_TIMEOUT = 30.0
+
+_CAPS = Caps()
+
+#: Process-wide. Bounds mutual recursion between agents, which `req.chain`
+#: cannot: see src/dispatch/inflight.py for why the bound is server-side.
+_INFLIGHT = InFlight(max_depth=_CAPS.hop_cap)
+
+# `chain` is caller-asserted, unvalidated, and copied into an append-only audit
+# table. It is not a security control (inflight.py is), so it is clamped rather
+# than rejected — a malformed chain must not cost the human their answer.
+_MAX_CHAIN_LINKS = 8
+_MAX_CHAIN_LINK_CHARS = 64
 
 
 class ConsultBody(BaseModel):
@@ -58,6 +72,12 @@ class ConsultBody(BaseModel):
 def current_mode() -> str:
     mode = os.environ.get("DISPATCH_MODE", MODE_OFF).strip() or MODE_OFF
     return mode if mode in VALID_MODES else MODE_OFF
+
+
+def _clamp_chain(chain: list[str]) -> tuple[str, ...]:
+    """Bound caller-supplied chain data before it can reach the audit table."""
+    return tuple(str(link)[:_MAX_CHAIN_LINK_CHARS]
+                 for link in chain[:_MAX_CHAIN_LINKS])
 
 
 def _env_path(cfg) -> Path:
@@ -206,7 +226,7 @@ def consult(body: ConsultBody, request: Request):
         session_id=body.session_id,
         to_agent=body.to_agent,
         question=body.question,
-        chain=tuple(body.chain),
+        chain=_clamp_chain(body.chain),
     )
 
     cfg = _config(request)
@@ -276,7 +296,7 @@ def consult(body: ConsultBody, request: Request):
     entries = _agents(cfg)
 
     refusal = check(req, _roster_for(req.from_agent, entries, origin.tier),
-                    origin, caps=Caps())
+                    origin, caps=_CAPS)
     if refusal is not None:
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
         return _body(refusal)
@@ -289,6 +309,20 @@ def consult(body: ConsultBody, request: Request):
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
         return _body(refusal)
 
-    result = driver(req, port, _gateway_key(), post=_post, timeout=_GATEWAY_TIMEOUT)
+    # The in-flight hold is the last gate, and it wraps the ONLY call in this
+    # function that can block for tens of seconds. Everything above it is a
+    # cheap check, so nothing cheap holds a slot. The `with` is what guarantees
+    # release on timeout and on exception alike.
+    with _INFLIGHT.hold(origin.user_id, req.to_agent) as denial:
+        if denial is not None:
+            refusal = ConsultResult.refused(
+                REASON_CAP_EXCEEDED, denial, peer=req.to_agent
+            )
+            record_consult(req, refusal, origin, instance_id, post=_audit_post)
+            return _body(refusal)
+
+        result = driver(req, port, _gateway_key(), post=_post,
+                        timeout=_GATEWAY_TIMEOUT)
+
     record_consult(req, result, origin, instance_id, post=_audit_post)
     return _body(result)
