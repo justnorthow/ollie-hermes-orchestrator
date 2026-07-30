@@ -51,9 +51,11 @@ DECLINED: dict[str, dict[str, str]] = {
     "openai": {
         "gpt-4": "Superseded by the GPT-5.6 family.",
         "gpt-5": "Superseded by the GPT-5.6 family.",
-        # NOTE: `gpt-5.6` is deliberately NOT declined. It appeared in the scrape and
-        # may be a family heading rather than a selectable id — that is exactly the
-        # kind of uncertainty the report should keep surfacing until someone checks.
+        # Confirmed by JB, 2026-07-30, after the check surfaced it as a candidate.
+        "gpt-5.6": (
+            "Not a model — it is the family heading on the docs page. The selectable "
+            "ids are gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna, all of which we offer."
+        ),
     },
     "groq": {
         "llama-3.1-8b": "Smaller sibling of llama-3.3-70b, which we already offer.",
