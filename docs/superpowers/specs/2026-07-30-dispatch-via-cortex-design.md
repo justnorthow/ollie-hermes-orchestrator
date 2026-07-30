@@ -115,35 +115,47 @@ is consult-only.
 
 ## Deployment prerequisites
 
-One blocker and one configuration change stand before this can be
-planned and enabled.
+One configuration change, and one cheap verification, stand before this
+can be planned and enabled.
 
-### 0. BLOCKER — the session id Cortex receives is not the one the orchestrator stores
+### 0. RETRACTED — the session ids do match
 
-**Verified 2026-07-30 and currently false.** Option A's provenance depends on
-`get_session_owner(agent_id, session_id)` finding a row. It would not find one.
+An earlier revision of this spec recorded a BLOCKER here: that the session id
+Cortex receives is a different namespace from what `agent_sessions` stores, so
+every consult would refuse `forbidden`. **That was wrong and is retracted.**
 
-| Side | Value |
-|---|---|
-| What Hermes hands the provider | `agent.session_id` (`agent/agent_init.py:1653`). API-created sessions look like `api_<ts>_<hex>` — `gateway/platforms/api_server.py:3291`. |
-| What the orchestrator stores in `agent_sessions.hermes_session_id` | the **run id** it generated while proxying — `run_0bd84b68…` (`src/api/runs.py:336`) |
+The run path in `gateway/platforms/api_server.py`:
 
-Different namespaces. Every consult would resolve no owner, fail closed, and
-refuse `forbidden`. Dispatch would deploy and refuse 100% of requests.
+```python
+session_id = body.get("session_id") or stored_session_id   # :6150
+...
+run_id = f"run_{uuid.uuid4().hex}"                          # :6163
+session_id = session_id or run_id                           # :6164
+```
 
-Evidence: every row on both boxes is `run_`-prefixed — 16/16 on JNOW, 1/1 on
-GetBilled. Zero real session ids have ever been recorded.
+With no client-supplied id, **Hermes uses the run id as the session id**. With
+one, it adopts it verbatim. Either way the value equals what the orchestrator
+stores — and `src/api/runs.py:336` pre-claims that run id as the session row on
+purpose, with a comment saying so: "Hermes v0.18 emits no session_id in a first
+run's SSE frames, so the frontend's done-event fallback reuses THIS run id as
+session_id on the thread's next message."
 
-**This is plumbing, not architecture.** The orchestrator already has the capture
-path: `_scan_frame_for_session` (`src/api/runs.py:136`) scrapes `session_id` out
-of the gateway's SSE frames and records it (`runs.py:454`, `runs.py:545`), and
-the gateway does emit it (`api_server.py:2641`). But those call sites sit on the
-governed/streaming paths, and across 17 rows the path has never fired.
+So the `run_*` values in `agent_sessions` are not a foreign namespace. They are
+the session id, by construction.
 
-Before any of this spec can be planned, settle: does the gateway emit
-`session_id` on the ordinary (non-governed) run path the boxes actually use, and
-if so why is it not captured? The fix is likely small. The point is that it is a
-named work item rather than an assumption.
+**How the error was made, since it is worth not repeating:** the `api_<ts>_<hex>`
+format at `api_server.py:3291` was read and generalised to the run path. That
+line belongs to the **fork** endpoint. One code path was read and a conclusion
+drawn about a different one.
+
+**What is still genuinely unverified** is the last hop: that `agent.session_id`
+— the value `initialize(session_id)` hands the provider — is this same string
+rather than something re-derived inside the agent. The evidence points that way
+(the run path threads `session_id` into the agent construction and the run
+status), but it has not been observed end to end. Settle it with one live run:
+create a run through the orchestrator, read the session id Hermes reports back,
+and compare it to the run id and to the `agent_sessions` row. Cheap, and it
+converts the last assumption into an observation.
 
 ### 1. A consultable specialist must run a `fast` model
 
