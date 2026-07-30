@@ -40,16 +40,32 @@ def test_unrecognised_mode_falls_back_to_off_at_the_api(monkeypatch, fake_env):
 
 
 def test_consult_in_off_mode_never_reaches_a_gateway(monkeypatch, fake_env):
+    """Pins that the MODE_OFF guard in src/api/dispatch.py:154-163 short-circuits
+    before any driver is resolved.
+
+    The roster and port lookups are patched to succeed -- a real, consultable
+    peer -- exactly as the sibling happy-path tests in test_api_dispatch.py do,
+    so the *only* thing standing between this request and a driver call is the
+    off-mode guard. Mocking `_post` to explode is NOT a valid way to prove this:
+    `consult_off` never calls `post` at all (see src/dispatch/backends.py), so
+    that mock can never fire regardless of whether the guard exists. Asserting
+    `backend_for` itself was never invoked is the only thing only the guard can
+    produce -- verified by deleting the guard block, see task-8-report.md.
+    """
     from src.api.main import create_app
+    from src.dispatch.types import Teammate
 
     monkeypatch.setattr("src.api.dispatch.get_session_owner", lambda a, s: "u-1")
     monkeypatch.setattr("src.api.dispatch.resolve_tier", lambda i, u: "account_admin")
     monkeypatch.setattr("src.api.dispatch.record_consult", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "src.api.dispatch.build_roster",
+        lambda *a, **kw: [Teammate("karl-m", "K", None, "gpt-5.6-terra", "fast", True)],
+    )
+    monkeypatch.setattr("src.api.dispatch.port_for", lambda agent, entries: 8643)
 
-    def explode(*a, **kw):
-        raise AssertionError("off mode must not call a gateway")
-
-    monkeypatch.setattr("src.api.dispatch._post", explode)
+    called = []
+    monkeypatch.setattr("src.api.dispatch.backend_for", lambda mode: called.append(mode))
 
     r = TestClient(create_app()).post("/v1/dispatch/consult", headers=AUTH, json={
         "from_agent": "billie", "session_id": "s1",
@@ -58,3 +74,4 @@ def test_consult_in_off_mode_never_reaches_a_gateway(monkeypatch, fake_env):
 
     assert r.json()["ok"] is False
     assert r.json()["reason"] == "not_enabled"
+    assert called == []

@@ -27,9 +27,19 @@ _PROMPT = (
 )
 
 
-def consult_off(req: ConsultRequest, peer_port: int, gateway_key: str, post=None
-                ) -> ConsultResult:
-    """Refuse without touching the network. Never calls `post`."""
+def consult_off(req: ConsultRequest, peer_port: int, gateway_key: str, post=None,
+                timeout: float = 30.0) -> ConsultResult:
+    """Refuse without touching the network. Never calls `post`.
+
+    Accepts the same `(req, peer_port, gateway_key, post, timeout=...)` shape
+    consult_direct does, even though it ignores all of it, so it stays
+    interchangeable through `backend_for`. dispatch.py's own MODE_OFF early
+    return means this is never reached in production today -- but if that
+    guard is ever removed, `backend_for(MODE_OFF)` must still be callable with
+    the same keyword shape every other driver is called with (dispatch.py:197
+    passes `timeout=` explicitly), or the fallback is a TypeError/500 instead
+    of the graceful refusal this function exists to give.
+    """
     return ConsultResult.refused(
         REASON_NOT_ENABLED,
         "dispatch is disabled on this instance (DISPATCH_MODE=off)",

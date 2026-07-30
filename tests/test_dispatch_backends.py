@@ -101,3 +101,19 @@ def test_backend_for_rejects_unknown_and_unimplemented_modes():
         backend_for("local")
     with pytest.raises(ValueError):
         backend_for("nonsense")
+
+
+def test_off_backend_is_driver_compatible_through_backend_for():
+    """If dispatch.py's MODE_OFF early return were ever removed, backend_for(MODE_OFF)
+    must still be callable with the exact keyword shape dispatch.py uses for every
+    driver -- `driver(req, port, key, post=..., timeout=...)` -- and return a
+    structured refusal rather than raising a TypeError (which would surface to the
+    calling model as an HTTP 500 / empty tool result)."""
+    def explode(*a, **kw):
+        raise AssertionError("off mode must not call post")
+
+    driver = backend_for(MODE_OFF)
+    r = driver(REQ, 8643, "k", post=explode, timeout=30.0)
+
+    assert r.ok is False
+    assert r.reason == REASON_NOT_ENABLED
