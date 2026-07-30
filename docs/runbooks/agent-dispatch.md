@@ -11,14 +11,61 @@ anyone work. Task/queue dispatch (`assign_task`, `check_assignments`, the
 exist yet; if you find yourself wanting an agent to hand off a task rather
 than ask a question, that isn't built.
 
-## Enabling it
+## Enabling it: two processes, two environments
 
-Per profile, in that profile's environment:
+**Read this whole section before changing anything.** The plugin and the
+orchestrator are separate processes with separate environments, and each reads
+its own copy of `DISPATCH_MODE`. Setting it on only one side is the most likely
+way to end up with a box that looks enabled and refuses every call.
+
+- **Per profile** (the Hermes agent process) `DISPATCH_MODE` controls the
+  *plugin surface*: whether the agent is offered the tools and the prompt block
+  at all.
+- **Instance-wide** (the orchestrator process) `DISPATCH_MODE` controls whether
+  any consult is actually *permitted*. `current_mode()` in
+  `src/api/dispatch.py` reads the orchestrator's own environment, so this one
+  value gates **every profile on the box at once**. There is no per-profile
+  server-side switch.
+
+Set both, or the tools appear and every call returns `not_enabled` — whose
+table entry below reads "dispatch is off on this instance", which the operator
+has just proven to themselves is false.
+
+### 1. Orchestrator side (once per box)
+
+In `~/.config/ollie-orchestrator/.env` (the file `scripts/install.sh` creates,
+alongside `ORCHESTRATOR_KEY`):
 
 ```bash
 DISPATCH_MODE=direct
-DISPATCH_AGENT_ID=<this-agent's-id>
 ```
+
+Confirm `HERMES_GATEWAY_KEY` in that same file is **not blank** — `install.sh`
+writes it empty for you to paste into later, and dispatch cannot reach any peer
+gateway without it. A blank key refuses every consult with `misconfigured`.
+
+Then restart the orchestrator:
+
+```bash
+systemctl --user restart ollie-orchestrator
+```
+
+### 2. Per profile, for each agent that should be able to ask
+
+In that profile's environment:
+
+```bash
+DISPATCH_MODE=direct
+DISPATCH_AGENT_ID=<this-agent's-id>   # must match its id in AGENTS_JSON
+ORCHESTRATOR_URL=http://127.0.0.1:9123
+ORCHESTRATOR_KEY=<the same value as the orchestrator's ORCHESTRATOR_KEY>
+```
+
+`ORCHESTRATOR_KEY` is **required**: the plugin authenticates to the
+orchestrator with it, and without it every call 401s and comes back as
+`orchestrator_auth_failed`. `ORCHESTRATOR_URL` defaults to
+`http://127.0.0.1:9123` and only needs setting if the orchestrator is not on
+loopback's default port.
 
 Then:
 
@@ -26,6 +73,17 @@ Then:
 hermes plugins install   # installs plugins/dispatch/ into the profile
 # restart that profile's gateway
 ```
+
+### 3. Access control is the human's, not the agent's
+
+Enabling dispatch does **not** widen who can reach which agent. The roster a
+calling agent sees is filtered by `can_reach(tier, scope, manager_visible)` —
+the same rule that decides what the dashboard shows that human and what a
+direct session read allows. A peer the human could not reach directly is
+absent from `list_teammates` and refuses as `unknown_peer`, identically to an
+agent that does not exist. So if an agent "cannot see" a teammate you expect
+it to see, check the **human's** tier and the peer's `scope` /
+`manager_visible` in `AGENTS_JSON` first — not the dispatch config.
 
 Default is `off`. In `off` mode the plugin contributes **zero** tool schemas
 and **zero** system-prompt text — an agent's context is byte-identical to a
@@ -45,15 +103,59 @@ Every non-grant response carries a `reason`. None of these are errors in the
 plumbing sense — they're the tool telling the calling agent (and, through it,
 the human) exactly why the ask didn't go through.
 
+There are **two vocabularies**, and which one you're looking at tells you which
+side refused. Server reasons come from `REASON_*` in `src/dispatch/types.py`
+and mean the orchestrator considered the request and said no. Plugin reasons
+are defined in `plugins/dispatch/reasons.py` and mean the request never reached
+the orchestrator at all — the plugin cannot import from `src/` (it runs on a
+Hermes box where the orchestrator package isn't installed), so it has its own.
+The two sets are deliberately disjoint.
+
+### Server-side (the orchestrator decided)
+
 | Reason | Meaning |
 |---|---|
-| `not_enabled` | Dispatch is off on this instance, or the configured mode has no backend driver in this build (see "Modes" below). |
-| `forbidden` | Either provenance could not be resolved (see below), or the request itself is invalid (empty question, an agent consulting itself). |
-| `unknown_peer` | `to_agent` is not on this box's roster. |
-| `peer_not_consult_eligible` | The peer exists but its model's `speed_class` isn't `fast` — see "Consult eligibility" below. |
-| `cap_exceeded` | The chain would cycle back to an agent already in it, or the hop cap (3) was reached. |
-| `timeout` | The peer's gateway didn't answer within the mediator's timeout window. |
-| `peer_unavailable` | The peer's gateway could not be reached at all. |
+| `not_enabled` | Dispatch is off **on the orchestrator**, or the configured mode has no backend driver in this build (see "Modes" below). If you set `DISPATCH_MODE=direct` per profile and see this, you did not set it on the orchestrator — see "Enabling it" above. |
+| `forbidden` | Either provenance could not be resolved (see below), or the request itself is invalid (empty question, a question over 4000 characters, an agent consulting itself). |
+| `unknown_peer` | `to_agent` is not on the roster **this human may reach**. Covers both "no such agent" and "an agent this human has no access to" — deliberately indistinguishable, so a refusal cannot confirm that an agent they can't see exists. |
+| `peer_not_consult_eligible` | The peer exists, is reachable, but its model's `speed_class` isn't `fast` — see "Consult eligibility" below. |
+| `cap_exceeded` | A consult to that peer for that human is already open (a chain re-entering a peer it is already inside), or the box-wide in-flight limit of 3 concurrent consults is reached. See "Recursion is bounded server-side" below. |
+| `timeout` | The peer's gateway didn't answer within the mediator's 30s window. |
+| `peer_unavailable` | The peer's gateway could not be reached, or answered with something unusable. |
+| `misconfigured` | The **orchestrator** isn't configured to dispatch: `HERMES_GATEWAY_KEY` is blank, or its app config couldn't be read. The peer was never contacted — don't go and check the peer's gateway, it's fine. |
+
+### Plugin-side (the orchestrator was never reached)
+
+| Reason | Meaning |
+|---|---|
+| `orchestrator_auth_failed` | The orchestrator answered 401/403. This profile's `ORCHESTRATOR_KEY` is unset, wrong, or was rotated without restarting the profile. |
+| `orchestrator_unreachable` | Could not connect at all: nothing listening, wrong `ORCHESTRATOR_URL`, or the service is down. |
+| `orchestrator_timeout` | No answer within the plugin's client budget (75s, which exceeds the orchestrator's ~60s worst case). |
+| `orchestrator_error` | The orchestrator answered with some other error status, or the response could not be parsed. The service is up; the route or the request is wrong. |
+
+## Recursion is bounded server-side
+
+Two `fast`, `direct` agents can consult each other, and each level is a nested
+synchronous completion holding a connection and a **paid** generation slot. The
+`chain` field on a consult cannot stop this: it is asserted by the calling
+agent process, which is exactly as trustworthy as an identity asserted by that
+process, and in practice it is always empty because nothing carries it across
+the gateway hop.
+
+The orchestrator therefore tracks open consults itself
+(`src/dispatch/inflight.py`) and refuses `cap_exceeded` when:
+
+- that **(human, peer)** pair already has a consult open — a ping-pong between
+  two agents has to re-enter one of them to keep going, so this cuts it at
+  depth two; or
+- **3 consults are already in flight** box-wide.
+
+That second bound is deliberately conservative for a first enablement: on a
+busy box with several people consulting at once, a legitimate fourth
+simultaneous consult will refuse with `cap_exceeded`. If that shows up in
+practice, the number is `Caps.hop_cap` in `src/dispatch/authority.py` — raise
+it there rather than adding a new setting, and note that it is the same
+constant the (currently unenforceable) chain-length hop cap uses.
 
 ## Consult eligibility comes from the model catalog
 
@@ -140,6 +242,16 @@ attempt. If you're hunting for session-id probing or repeated provenance
 failures, look in the service log, not `governance_events` — the audit
 table alone will look artificially clean.
 
+## The plugin's config schema is decorative — env vars are the only switch
+
+`get_config_schema()` returns an empty list, on purpose. It previously
+advertised `mode` and `orchestrator_url` keys, and **nothing read either of
+them**: `_mode()` reads `DISPATCH_MODE` from the environment on every call, and
+`DispatchHttpClient` reads `ORCHESTRATOR_URL` / `ORCHESTRATOR_KEY` from the
+environment at construction. A host UI writing to those keys would have changed
+nothing while appearing to work. Environment variables are the only live
+switch in this build.
+
 ## Known limitation: the HTTP client reads its target once
 
 `DispatchHttpClient` (the plugin's only outbound HTTP path) reads
@@ -155,13 +267,31 @@ assume the running process picked it up.
 
 ## Verifying an enable worked
 
-```bash
-curl -s -H "Authorization: Bearer $ORCHESTRATOR_KEY" \
-     "http://127.0.0.1:9123/v1/dispatch/teammates?agent=<agent>"
+The teammates endpoint is provenance-gated, so a bare curl can no longer
+enumerate the roster — that was the point of gating it. You need a real
+`(agent_id, session_id)` pair that `agent_sessions` has an owner row for:
+
+```sql
+-- Supabase: a recent session for the agent you're testing
+select agent_id, hermes_session_id, user_id
+from public.agent_sessions
+where agent_id = '<agent>'
+order by last_active_at desc limit 5;
 ```
 
-Expect a `teammates` list with each peer's `speed_class` and
-`consult_eligible`. Then, from the agent itself, ask a `fast` peer something
-trivial and confirm the answer round-trips; ask a `heavy` peer the same
-question and confirm it comes back `peer_not_consult_eligible` rather than
-silently succeeding or hanging.
+```bash
+curl -s -H "Authorization: Bearer $ORCHESTRATOR_KEY" \
+     "http://127.0.0.1:9123/v1/dispatch/teammates?agent=<agent>&session_id=<session>"
+```
+
+Expect `"ok": true` and a `teammates` list with each peer's `speed_class` and
+`consult_eligible`. Remember the list is **that session's human's** roster, not
+the full set of agents on the box — a shorter list than you expected usually
+means the tier, not a dispatch fault. `"ok": false` with `forbidden` means the
+`(agent_id, session_id)` pair has no owner row; `not_enabled` with an empty
+list means the **orchestrator's** `DISPATCH_MODE` is still `off`.
+
+Then, from the agent itself, ask a `fast` peer something trivial and confirm
+the answer round-trips; ask a `heavy` peer the same question and confirm it
+comes back `peer_not_consult_eligible` rather than silently succeeding or
+hanging.

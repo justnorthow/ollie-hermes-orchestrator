@@ -44,7 +44,21 @@ _logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["dispatch"], dependencies=[Depends(require_bearer)])
 
-_GATEWAY_TIMEOUT = 30.0
+# The server's worst-case budget for one consult, leg by leg. The plugin's
+# client timeout (plugins/dispatch/http_client.py) must exceed the total, or it
+# gives up while this process is still working and the audit trail records a
+# granted consult that nobody ever received.
+_OWNER_LOOKUP_TIMEOUT = 10.0  # get_session_owner, src/api/sessions.py
+_TIER_LOOKUP_TIMEOUT = 10.0   # resolve_tier, src/api/roles.py
+_GATEWAY_TIMEOUT = 30.0       # the peer's own generation
+_AUDIT_TIMEOUT = 10.0         # the governance_events write below
+#: Not a setting — the sum of the four legs above, exported so the client's
+#: budget can be asserted against it (tests/test_dispatch_timeout_budget.py).
+#: The first two mirror timeouts owned by sessions.py and roles.py; if either
+#: of those changes, change the mirror here.
+SERVER_WORST_CASE_SECONDS = (
+    _OWNER_LOOKUP_TIMEOUT + _TIER_LOOKUP_TIMEOUT + _GATEWAY_TIMEOUT + _AUDIT_TIMEOUT
+)
 
 _CAPS = Caps()
 
@@ -114,7 +128,8 @@ def _post(url, headers, json, timeout):
 
 
 def _audit_post(url, headers, json):
-    httpx.post(url, headers=headers, json=json, timeout=10.0).raise_for_status()
+    httpx.post(url, headers=headers, json=json,
+               timeout=_AUDIT_TIMEOUT).raise_for_status()
 
 
 def _config(request: Request):

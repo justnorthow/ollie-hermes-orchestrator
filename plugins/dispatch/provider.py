@@ -10,6 +10,9 @@ text, so an agent's context is byte-identical to a box without it installed.
 import json
 import os
 
+import httpx
+
+from . import reasons
 from .http_client import DispatchHttpClient
 
 _PROMPT_BLOCK = """\
@@ -122,6 +125,36 @@ class DispatchProvider:
             return self._ask_teammate(args)
         return f"Unknown dispatch tool: {name}"
 
+    @staticmethod
+    def _transport_refusal(exc: Exception) -> dict:
+        """Classify a failed call to the orchestrator into a local reason.
+
+        `str(exc)` on an httpx error embeds the full request URL, so the
+        orchestrator's host and port would be placed in front of a language
+        model that is about to write a reply to a human. The details below name
+        what went wrong without quoting the URL back.
+        """
+        if isinstance(exc, httpx.HTTPStatusError):
+            code = exc.response.status_code
+            if code in (401, 403):
+                return {"reason": reasons.ORCHESTRATOR_AUTH_FAILED,
+                        "detail": f"the orchestrator rejected this profile's "
+                                  f"credentials (HTTP {code}) — check "
+                                  f"ORCHESTRATOR_KEY in this profile's environment"}
+            return {"reason": reasons.ORCHESTRATOR_ERROR,
+                    "detail": f"the orchestrator answered HTTP {code}"}
+        if isinstance(exc, httpx.TimeoutException):
+            return {"reason": reasons.ORCHESTRATOR_TIMEOUT,
+                    "detail": "the orchestrator did not answer within the "
+                              "client timeout"}
+        if isinstance(exc, httpx.TransportError):
+            return {"reason": reasons.ORCHESTRATOR_UNREACHABLE,
+                    "detail": "could not connect to the orchestrator — check "
+                              "ORCHESTRATOR_URL and that the service is running"}
+        # Anything else (a JSON decode failure, a bug in this plugin). Named
+        # generically rather than guessed at; str(exc) here carries no URL.
+        return {"reason": reasons.ORCHESTRATOR_ERROR, "detail": str(exc)}
+
     def _list_teammates(self) -> str:
         try:
             # session_id, like ask_teammate's: the orchestrator resolves the
@@ -133,8 +166,7 @@ class DispatchProvider:
                 {"agent": self._agent_id(), "session_id": self._session_id},
             )
         except Exception as exc:  # noqa: BLE001 — never raise into the model
-            return json.dumps({"ok": False, "reason": "orchestrator_unreachable",
-                               "detail": str(exc)})
+            return json.dumps({"ok": False, **self._transport_refusal(exc)})
         return json.dumps(data)
 
     def _ask_teammate(self, args: dict) -> str:
@@ -148,6 +180,5 @@ class DispatchProvider:
         try:
             data = self._client.post("/v1/dispatch/consult", payload)
         except Exception as exc:  # noqa: BLE001 — never raise into the model
-            return json.dumps({"ok": False, "reason": "orchestrator_unreachable",
-                               "detail": str(exc)})
+            return json.dumps({"ok": False, **self._transport_refusal(exc)})
         return json.dumps(data)

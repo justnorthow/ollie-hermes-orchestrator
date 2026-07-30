@@ -3,7 +3,21 @@ import os
 
 import httpx
 
-_TIMEOUT = 35.0  # must exceed the orchestrator's own 30s gateway timeout
+# Must exceed the orchestrator's WORST CASE for one consult, not just the
+# gateway leg. Server-side a cold request can spend, in series:
+#   10s  owner lookup      (get_session_owner, src/api/sessions.py)
+# + 10s  tier lookup       (resolve_tier, src/api/roles.py)
+# + 30s  peer generation   (_GATEWAY_TIMEOUT, src/api/dispatch.py)
+# + 10s  audit write       (_AUDIT_TIMEOUT, src/api/dispatch.py)
+# = 60s. The old 35.0 accounted for the gateway leg alone, so on a cold request
+# this client gave up while the server was still working: the server then went
+# on to complete the consult and write a governance_events row with
+# status="ok", while the calling model was told the orchestrator was
+# unreachable. An audit trail recording a granted consult that nobody received
+# is worse than a slow one. 75s leaves headroom over the 60s total.
+# tests/test_dispatch_timeout_budget.py asserts this against the server's own
+# constants so the two cannot drift apart silently.
+_TIMEOUT = 75.0
 
 
 class DispatchHttpClient:
