@@ -119,7 +119,7 @@ The two sets are deliberately disjoint.
 | `forbidden` | Either provenance could not be resolved (see below), or the request itself is invalid (empty question, a question over 4000 characters, an agent consulting itself). |
 | `unknown_peer` | `to_agent` is not on the roster **this human may reach**. Covers both "no such agent" and "an agent this human has no access to" — deliberately indistinguishable, so a refusal cannot confirm that an agent they can't see exists. |
 | `peer_not_consult_eligible` | The peer exists, is reachable, but its model's `speed_class` isn't `fast` — see "Consult eligibility" below. |
-| `cap_exceeded` | A consult to that peer for that human is already open (a chain re-entering a peer it is already inside), or the box-wide in-flight limit of 3 concurrent consults is reached. See "Recursion is bounded server-side" below. |
+| `cap_exceeded` | A consult to that peer for that human is already open (a chain re-entering a peer it is already inside), or the box-wide in-flight limit of 8 concurrent consults is reached. The detail text says which. See "Recursion is bounded server-side" below. |
 | `timeout` | The peer's gateway didn't answer within the mediator's 30s window. |
 | `peer_unavailable` | The peer's gateway could not be reached, or answered with something unusable. |
 | `misconfigured` | The **orchestrator** isn't configured to dispatch: `HERMES_GATEWAY_KEY` is blank, or its app config couldn't be read. The peer was never contacted — don't go and check the peer's gateway, it's fine. |
@@ -148,14 +148,24 @@ The orchestrator therefore tracks open consults itself
 - that **(human, peer)** pair already has a consult open — a ping-pong between
   two agents has to re-enter one of them to keep going, so this cuts it at
   depth two; or
-- **3 consults are already in flight** box-wide.
+- **8 consults are already in flight** box-wide.
 
-That second bound is deliberately conservative for a first enablement: on a
-busy box with several people consulting at once, a legitimate fourth
-simultaneous consult will refuse with `cap_exceeded`. If that shows up in
-practice, the number is `Caps.hop_cap` in `src/dispatch/authority.py` — raise
-it there rather than adding a new setting, and note that it is the same
-constant the (currently unenforceable) chain-length hop cap uses.
+The pairwise guard is the one doing the anti-recursion work. The box-wide
+ceiling is a backstop for a cascade that finds a path around it — a long ring
+of distinct agents, or provenance resolving to different humans partway down.
+
+That second bound is also, unavoidably, the box's consult concurrency budget:
+a slot is held for the whole peer call, up to 30 seconds. On a busy box,
+several people consulting at once can exhaust it, and the ninth simultaneous
+consult refuses with `cap_exceeded` even though nothing is recursing. If that
+shows up in practice, raise `_MAX_CONCURRENT_CONSULTS` in
+`src/api/dispatch.py`. It is deliberately a separate constant from
+`Caps.hop_cap`: that one bounds the depth of a single chain, this one bounds
+how many consults run at once, and raising this one costs gateway generation
+slots rather than loosening any chain-safety property.
+
+Both conditions refuse with the same `cap_exceeded` reason but different
+detail text, so the log line tells you which you hit.
 
 ## Consult eligibility comes from the model catalog
 

@@ -62,9 +62,17 @@ SERVER_WORST_CASE_SECONDS = (
 
 _CAPS = Caps()
 
-#: Process-wide. Bounds mutual recursion between agents, which `req.chain`
-#: cannot: see src/dispatch/inflight.py for why the bound is server-side.
-_INFLIGHT = InFlight(max_depth=_CAPS.hop_cap)
+#: Process-wide ceiling on CONCURRENTLY OPEN consults across every human on the
+#: box. Deliberately NOT Caps.hop_cap: that bounds the depth of one chain, this
+#: bounds simultaneous cardinality, and the two move for unrelated reasons. A
+#: slot is held for the whole driver call (up to _GATEWAY_TIMEOUT), so this is
+#: also the box's consult concurrency budget — raising it costs gateway
+#: generation slots, not chain safety. The pairwise (human, peer) guard in
+#: inflight.py does the actual anti-recursion work and is unaffected by this
+#: number. See src/dispatch/inflight.py for why the bound is server-side at all.
+_MAX_CONCURRENT_CONSULTS = 8
+
+_INFLIGHT = InFlight(max_depth=_MAX_CONCURRENT_CONSULTS)
 
 # `chain` is caller-asserted, unvalidated, and copied into an append-only audit
 # table. It is not a security control (inflight.py is), so it is clamped rather
