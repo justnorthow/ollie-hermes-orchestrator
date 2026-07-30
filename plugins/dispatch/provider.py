@@ -124,8 +124,14 @@ class DispatchProvider:
 
     def _list_teammates(self) -> str:
         try:
-            data = self._client.get("/v1/dispatch/teammates",
-                                    {"agent": self._agent_id()})
+            # session_id, like ask_teammate's: the orchestrator resolves the
+            # human from it and filters the roster to what that human may
+            # already reach. Without it the listing has no tier to filter by
+            # and returns nothing.
+            data = self._client.get(
+                "/v1/dispatch/teammates",
+                {"agent": self._agent_id(), "session_id": self._session_id},
+            )
         except Exception as exc:  # noqa: BLE001 — never raise into the model
             return json.dumps({"ok": False, "reason": "orchestrator_unreachable",
                                "detail": str(exc)})

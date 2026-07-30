@@ -3,6 +3,12 @@
 The plugin never reaches a peer gateway; it calls here. That is what makes
 provenance resolvable rather than asserted: this module derives the human from
 `agent_sessions` and the caller has no way to influence the answer.
+
+This module is also the only place the pure logic in src/dispatch/ is wired to
+the orchestrator's own rules — `can_reach` from src/api/authz.py decides whose
+peers a human may see at all, and is injected into the roster rather than
+imported by src/dispatch/, which keeps that package free of src/api/ and of the
+network-capable modules it pulls in.
 """
 import logging
 import os
@@ -13,6 +19,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from src.agents_json import read_agents
+from src.api.authz import can_reach
 from src.api.roles import resolve_tier
 from src.api.sessions import get_session_owner
 from src.auth import require_bearer
@@ -20,10 +27,11 @@ from src.catalog import MODELS
 from src.dispatch.audit import record_consult
 from src.dispatch.authority import Caps, check, resolve_origin
 from src.dispatch.backends import backend_for
-from src.dispatch.roster import build_roster
+from src.dispatch.roster import build_roster, visible_to
 from src.dispatch.types import (
     MODE_OFF,
     REASON_FORBIDDEN,
+    REASON_MISCONFIGURED,
     REASON_NOT_ENABLED,
     VALID_MODES,
     ConsultRequest,
@@ -89,15 +97,95 @@ def _audit_post(url, headers, json):
     httpx.post(url, headers=headers, json=json, timeout=10.0).raise_for_status()
 
 
-def _roster_for(agent: str, entries: list):
-    return build_roster(entries, MODELS, self_agent=agent)
+def _config(request: Request):
+    """app.state.config, or None when it cannot be read.
+
+    request.app can raise on a bare scope — src/api/sessions.py::_rbac_denied
+    and src/api/authz.py::admin_denied both guard it explicitly because it has
+    happened. Unlike those two, dispatch fails CLOSED on it: they are gates that
+    default to trusting an internal caller, this is the path that would
+    otherwise reach a live model with an unattributed request.
+    """
+    try:
+        return request.app.state.config
+    except Exception:  # noqa: BLE001 — absence of config is refused, not raised
+        _logger.warning("dispatch: app config unavailable", exc_info=True)
+        return None
+
+
+def _body(result: ConsultResult) -> dict:
+    """Explicit wire shape.
+
+    Returning `result.__dict__` would auto-publish any field a later change adds
+    to ConsultResult, with nobody reviewing the fact that it became part of a
+    public API response. Every field here is named on purpose.
+    """
+    return {
+        "ok": result.ok,
+        "answer": result.answer,
+        "reason": result.reason,
+        "detail": result.detail,
+        "peer": result.peer,
+    }
+
+
+def _roster_for(agent: str, entries: list, tier: str):
+    """Peers `agent` may consult, narrowed to what its human may already reach.
+
+    The narrowing is the fix for dispatch being a lateral path around the
+    orchestrator's human->agent access control: without it, a member-tier human
+    whose dashboard hides karl-m (company scope, not manager-visible) could ask
+    any agent to ask karl-m, and karl's answer would come back verbatim.
+    """
+    return visible_to(build_roster(entries, MODELS, self_agent=agent),
+                      tier, can_reach)
 
 
 @router.get("/v1/dispatch/teammates")
-def teammates(agent: str, request: Request):
-    roster = _roster_for(agent, _agents(request.app.state.config))
+def teammates(agent: str, session_id: str, request: Request):
+    """The roster this agent's human may see. Mode-gated and provenance-gated.
+
+    `session_id` is required for the same reason `consult` needs one: the tier
+    that filters this list has to come from a resolved human, never from the
+    caller. Before that, this endpoint answered any holder of the shared
+    ORCHESTRATOR_KEY — which is every profile on the box — with every agent's
+    id, display name and subtitle, on a box where dispatch was switched off.
+    """
+    mode = current_mode()
+    if mode == MODE_OFF:
+        # Inert means inert: off mode enumerates nothing, in the same way it
+        # consults nothing. Not even the count of peers leaks.
+        return {"ok": False, "mode": mode, "teammates": [],
+                "reason": REASON_NOT_ENABLED,
+                "detail": "dispatch is disabled on this instance (DISPATCH_MODE=off)"}
+
+    cfg = _config(request)
+    if cfg is None:
+        return {"ok": False, "mode": mode, "teammates": [],
+                "reason": REASON_MISCONFIGURED,
+                "detail": "orchestrator configuration is unavailable"}
+
+    origin = resolve_origin(
+        agent, session_id,
+        owner_lookup=get_session_owner,
+        tier_lookup=resolve_tier,
+        instance_id=cfg.instance_id,
+    )
+    if origin is None:
+        _logger.warning("dispatch: unresolvable provenance for teammates %s/%s",
+                        agent, session_id)
+        return {"ok": False, "mode": mode, "teammates": [],
+                "reason": REASON_FORBIDDEN,
+                "detail": "could not establish which human this request acts for"}
+
+    roster = _roster_for(agent, _agents(cfg), origin.tier)
     return {
-        "mode": current_mode(),
+        # `ok` on the success shape too: the plugin returns this payload straight
+        # to a model that has been told to distinguish refusals from answers, and
+        # one tool that answers in two incompatible shapes is how that instruction
+        # gets misread.
+        "ok": True,
+        "mode": mode,
         "teammates": [
             {
                 "agent_id": t.agent_id,
@@ -121,18 +209,24 @@ def consult(body: ConsultBody, request: Request):
         chain=tuple(body.chain),
     )
 
-    try:
-        cfg = request.app.state.config
-        instance_id = cfg.instance_id
-    except Exception:
-        cfg = None
-        instance_id = None
+    cfg = _config(request)
+    if cfg is None:
+        # Fail closed, and structured: this used to fall through with cfg=None
+        # into _agents(cfg) -> AttributeError -> an unhandled 500, which reaches
+        # the calling model as an empty tool result. No audit row is possible
+        # here (there is no Origin yet), so the log line is the only trace.
+        return _body(ConsultResult.refused(
+            REASON_MISCONFIGURED,
+            "orchestrator configuration is unavailable",
+            peer=req.to_agent,
+        ))
+    instance_id = cfg.instance_id
 
     origin = resolve_origin(
-        req,
+        req.from_agent, req.session_id,
         owner_lookup=get_session_owner,
         tier_lookup=resolve_tier,
-        instance_id=instance_id or "",
+        instance_id=instance_id,
     )
     if origin is None:
         # Fail closed. No provenance, no dispatch, and no backend is consulted.
@@ -143,11 +237,11 @@ def consult(body: ConsultBody, request: Request):
             "dispatch: unresolvable provenance for %s/%s",
             req.from_agent, req.session_id,
         )
-        return ConsultResult.refused(
+        return _body(ConsultResult.refused(
             REASON_FORBIDDEN,
             "could not establish which human this request acts for",
             peer=req.to_agent,
-        ).__dict__
+        ))
 
     # Mode is checked before any roster or port lookup, so no code path can
     # reach a gateway when dispatch is disabled. Task 8 asserts this.
@@ -159,7 +253,7 @@ def consult(body: ConsultBody, request: Request):
             peer=req.to_agent,
         )
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
-        return refusal.__dict__
+        return _body(refusal)
 
     # A mode can be VALID (src/dispatch/types.py) without a backend driver existing
     # for it yet (local/linear in this slice — src/dispatch/backends.py only wires
@@ -175,16 +269,17 @@ def consult(body: ConsultBody, request: Request):
             peer=req.to_agent,
         )
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
-        return refusal.__dict__
+        return _body(refusal)
 
     # One read of AGENTS_JSON, shared by the roster check and the port lookup below
     # (previously read and JSON-parsed twice per request).
     entries = _agents(cfg)
 
-    refusal = check(req, _roster_for(req.from_agent, entries), origin, caps=Caps())
+    refusal = check(req, _roster_for(req.from_agent, entries, origin.tier),
+                    origin, caps=Caps())
     if refusal is not None:
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
-        return refusal.__dict__
+        return _body(refusal)
 
     port = port_for(req.to_agent, entries)
     if port is None:
@@ -192,8 +287,8 @@ def consult(body: ConsultBody, request: Request):
             REASON_FORBIDDEN, "peer has no gateway port", peer=req.to_agent
         )
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
-        return refusal.__dict__
+        return _body(refusal)
 
     result = driver(req, port, _gateway_key(), post=_post, timeout=_GATEWAY_TIMEOUT)
     record_consult(req, result, origin, instance_id, post=_audit_post)
-    return result.__dict__
+    return _body(result)

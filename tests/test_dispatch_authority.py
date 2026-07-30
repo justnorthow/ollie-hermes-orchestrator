@@ -23,7 +23,7 @@ def _req(**kw):
 
 def test_origin_resolves_from_the_session_not_the_caller():
     origin = resolve_origin(
-        _req(),
+        "billie", "sess-1",
         owner_lookup=lambda agent, sid: "u-1" if (agent, sid) == ("billie", "sess-1") else None,
         tier_lookup=lambda inst, uid: "account_admin",
         instance_id="inst-1",
@@ -36,7 +36,7 @@ def test_unresolvable_session_returns_none_so_the_caller_fails_closed():
     """The single most important test in this module. A session that does not
     resolve to a human must not produce a permissive default identity."""
     origin = resolve_origin(
-        _req(),
+        "billie", "sess-1",
         owner_lookup=lambda agent, sid: None,
         tier_lookup=lambda inst, uid: "account_admin",
         instance_id="inst-1",
@@ -50,7 +50,7 @@ def test_tier_lookup_failure_does_not_invent_an_identity():
         raise RuntimeError("supabase down")
 
     origin = resolve_origin(
-        _req(),
+        "billie", "sess-1",
         owner_lookup=lambda agent, sid: "u-1",
         tier_lookup=boom,
         instance_id="inst-1",

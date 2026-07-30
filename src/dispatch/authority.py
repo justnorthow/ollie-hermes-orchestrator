@@ -30,8 +30,17 @@ _logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Caps:
+    #: Doubles as the bound on concurrently in-flight consults process-wide
+    #: (src/dispatch/inflight.py). `req.chain` is caller-asserted and always
+    #: empty in production, so the length test below cannot bound recursion on
+    #: its own; the in-flight counter is what actually enforces this number.
     hop_cap: int = 3
+    #: Reserved for the task/queue slice. Nothing enforces it yet.
     fan_out_cap: int = 5
+    #: Upper bound on a question's length. Unbounded, one consult could push an
+    #: arbitrarily large `content` value into the append-only governance_events
+    #: table (src/dispatch/audit.py), which nobody can redact afterwards.
+    question_cap: int = 4000
 
 
 @dataclass(frozen=True)
@@ -41,14 +50,21 @@ class Origin:
 
 
 def resolve_origin(
-    req: ConsultRequest,
+    from_agent: str,
+    session_id: str,
     owner_lookup,
     tier_lookup,
     instance_id: str,
 ) -> Origin | None:
-    """Derive the originating human from the session. None means refuse."""
+    """Derive the originating human from the session. None means refuse.
+
+    Takes the pair directly rather than a ConsultRequest because provenance is
+    also resolved for the teammates listing, which has no question and no peer:
+    building a hollow ConsultRequest just to satisfy the signature would invite
+    a reader to think those empty fields meant something.
+    """
     try:
-        user_id = owner_lookup(req.from_agent, req.session_id)
+        user_id = owner_lookup(from_agent, session_id)
     except Exception:
         _logger.warning("dispatch owner_lookup failed", exc_info=True)
         return None
@@ -70,10 +86,25 @@ def check(
     origin: Origin,
     caps: Caps = Caps(),
 ) -> ConsultResult | None:
-    """Return a refusal, or None when the request is allowed."""
+    """Return a refusal, or None when the request is allowed.
+
+    `roster` MUST already be narrowed to what `origin`'s tier may reach --
+    `roster.visible_to()` does this, and src/api/dispatch.py is where the two
+    are wired together. This function deliberately does not re-derive
+    reachability: it has no access to the tier rule, and a peer the human
+    cannot reach must be indistinguishable here from a peer that does not
+    exist, so that the `unknown_peer` refusal does not confirm its existence.
+    """
     if not req.question.strip():
         return ConsultResult.refused(
             REASON_FORBIDDEN, "question is empty", peer=req.to_agent
+        )
+
+    if len(req.question) > caps.question_cap:
+        return ConsultResult.refused(
+            REASON_FORBIDDEN,
+            f"question exceeds {caps.question_cap} characters",
+            peer=req.to_agent,
         )
 
     if req.to_agent == req.from_agent:

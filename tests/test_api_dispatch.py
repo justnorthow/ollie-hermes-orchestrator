@@ -22,7 +22,8 @@ def _no_network(monkeypatch):
 
 
 def test_teammates_requires_auth(client):
-    assert client.get("/v1/dispatch/teammates?agent=billie").status_code in (401, 403)
+    assert client.get(
+        "/v1/dispatch/teammates?agent=billie&session_id=s1").status_code in (401, 403)
 
 
 def test_teammates_lists_peers_with_eligibility(client, monkeypatch):
@@ -34,12 +35,35 @@ def test_teammates_lists_peers_with_eligibility(client, monkeypatch):
                                    "fast", True)],
     )
 
-    r = client.get("/v1/dispatch/teammates?agent=billie", headers=AUTH)
+    r = client.get("/v1/dispatch/teammates?agent=billie&session_id=s1", headers=AUTH)
 
     assert r.status_code == 200
+    assert r.json()["ok"] is True
     body = r.json()["teammates"]
     assert body[0]["agent_id"] == "karl-m"
     assert body[0]["consult_eligible"] is True
+
+
+def test_teammates_without_provenance_lists_nothing(client, monkeypatch):
+    """The listing is provenance-gated exactly like a consult: without a
+    resolvable human there is no tier to filter the roster by, and an
+    unfiltered roster is the enumeration this endpoint used to permit."""
+    from src.dispatch.types import Teammate
+
+    monkeypatch.setattr("src.api.dispatch.get_session_owner", lambda a, s: None)
+    monkeypatch.setattr(
+        "src.api.dispatch.build_roster",
+        lambda *a, **kw: [Teammate("karl-m", "Karl M", "Email", "gpt-5.6-terra",
+                                   "fast", True)],
+    )
+
+    r = client.get("/v1/dispatch/teammates?agent=billie&session_id=bogus",
+                   headers=AUTH)
+
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert r.json()["reason"] == "forbidden"
+    assert r.json()["teammates"] == []
 
 
 def test_consult_returns_the_peer_answer(client, monkeypatch):
@@ -167,7 +191,8 @@ def test_roster_resolves_from_config_default_when_env_var_unset(fake_env, monkey
 
     local_client = TestClient(create_app())
 
-    r = local_client.get("/v1/dispatch/teammates?agent=billie", headers=AUTH)
+    r = local_client.get("/v1/dispatch/teammates?agent=billie&session_id=s1",
+                         headers=AUTH)
 
     assert r.status_code == 200
     assert r.json()["teammates"] == []

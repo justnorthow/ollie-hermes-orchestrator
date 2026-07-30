@@ -20,6 +20,11 @@ REASON_PEER_NOT_CONSULT_ELIGIBLE = "peer_not_consult_eligible"
 REASON_CAP_EXCEEDED = "cap_exceeded"
 REASON_TIMEOUT = "timeout"
 REASON_PEER_UNAVAILABLE = "peer_unavailable"
+#: The orchestrator itself is not configured to dispatch (e.g. a blank
+#: HERMES_GATEWAY_KEY, or app config unavailable). Deliberately distinct from
+#: peer_unavailable: that one sends the operator to check the peer's gateway,
+#: which is running fine.
+REASON_MISCONFIGURED = "misconfigured"
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,14 @@ class Teammate:
     model: str | None
     speed_class: str | None
     consult_eligible: bool
+    #: The two fields src/api/authz.py's can_reach() decides human->agent access
+    #: on, carried through from AgentEntry so the same rule can gate dispatch
+    #: without src/dispatch/ importing src/api/. Defaults are the fail-closed
+    #: pair: a company-scope, manager-invisible agent is reachable only by
+    #: account_admin and above, so an entry missing these fields is hidden from
+    #: everyone below that tier rather than exposed to everyone.
+    scope: str = "company"
+    manager_visible: bool = False
 
 
 @dataclass(frozen=True)
