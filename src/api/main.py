@@ -17,6 +17,7 @@ from src.api.market_data import router as market_data_router
 from src.api.market_datasets import router as market_datasets_router
 from src.api.runs import router as runs_router
 from src.api.sessions import router as sessions_router
+from src.api.dispatch import router as dispatch_router
 from src.api.admin import router as admin_router
 from src.api.manage import router as manage_router
 from src.api.instance import router as instance_router
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(market_datasets_router)
     app.include_router(runs_router)
     app.include_router(sessions_router)
+    app.include_router(dispatch_router)
     app.include_router(admin_router)
     app.include_router(manage_router)
     app.include_router(instance_router)

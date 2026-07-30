@@ -30,6 +30,10 @@ HERMES_GATEWAY_KEY=
 HERMES_STACK_DIR=${HOME}/hermes-stack
 HERMES_PROFILES_DIR=${HOME}/.hermes/profiles
 SYSTEMD_USER_DIR=${SYSTEMD_DIR}
+# Agent-to-agent dispatch. Instance-wide: this gates consults for every profile
+# on the box. Set to "direct" AND set DISPATCH_MODE per profile to enable.
+# See docs/runbooks/agent-dispatch.md.
+DISPATCH_MODE=off
 EOF
   chmod 600 "${ENV_FILE}"
   echo "Generated ${ENV_FILE}. Edit it to paste your HERMES_GATEWAY_KEY (from ~/hermes-stack/.env)."
