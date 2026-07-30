@@ -11,7 +11,7 @@ import logging
 import os
 
 from src.dispatch.authority import Origin
-from src.dispatch.types import ConsultRequest, ConsultResult
+from src.dispatch.types import AuditPost, ConsultRequest, ConsultResult
 
 _logger = logging.getLogger(__name__)
 
@@ -21,9 +21,16 @@ def record_consult(
     result: ConsultResult,
     origin: Origin,
     instance_id: str | None,
-    post,
+    post: AuditPost,
 ) -> None:
-    """Append one dispatch_consult row. Best-effort — never raises."""
+    """Append one dispatch_consult row. Best-effort — never raises.
+
+    `req.question` and `req.chain` are agent-controlled and land verbatim in an
+    append-only table. Both are bounded before they get here — the question by
+    Caps.question_cap in authority.check(), the chain by the API boundary in
+    src/api/dispatch.py. This function does not re-bound them; it is on the
+    failure path for a request that has already been admitted.
+    """
     url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     if not (url and key):

@@ -67,12 +67,17 @@ class DispatchProvider:
         return os.environ.get("DISPATCH_AGENT_ID", "")
 
     def get_config_schema(self) -> list[dict]:
-        return [
-            {"key": "mode", "label": "Dispatch mode",
-             "type": "select", "options": ["off", "direct"], "default": "off"},
-            {"key": "orchestrator_url", "label": "Orchestrator URL",
-             "type": "string", "default": "http://127.0.0.1:9123"},
-        ]
+        """No configurable keys in this build — deliberately empty.
+
+        This previously advertised `mode` and `orchestrator_url`. Nothing read
+        either: `_mode()` reads DISPATCH_MODE from the environment on every
+        call, and DispatchHttpClient reads ORCHESTRATOR_URL / ORCHESTRATOR_KEY
+        from the environment at construction. A host UI writing to those keys
+        would have changed nothing while looking like it had, which is how an
+        operator ends up debugging the wrong thing. Environment variables are
+        the only live switch; the runbook says so explicitly.
+        """
+        return []
 
     def system_prompt_block(self) -> str:
         return "" if self._mode() == "off" else _PROMPT_BLOCK
@@ -167,6 +172,12 @@ class DispatchProvider:
             )
         except Exception as exc:  # noqa: BLE001 — never raise into the model
             return json.dumps({"ok": False, **self._transport_refusal(exc)})
+        # The plugin and the orchestrator are separately deployed and can skew.
+        # A 200 whose body predates the `ok` field is a successful listing, so
+        # fill it in rather than hand the model a payload in a shape the system
+        # prompt did not teach it to read. Never overrides an `ok` the server set.
+        if isinstance(data, dict) and "ok" not in data:
+            data["ok"] = True
         return json.dumps(data)
 
     def _ask_teammate(self, args: dict) -> str:

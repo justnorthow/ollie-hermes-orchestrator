@@ -103,11 +103,77 @@ def test_unknown_tool_name_is_reported_not_raised(provider, monkeypatch):
     assert "unknown" in provider.handle_tool_call("nope", {}).lower()
 
 
-def test_config_schema_exposes_mode_and_orchestrator_url(provider):
-    keys = {f["key"] for f in provider.get_config_schema()}
+def test_config_schema_is_empty_because_nothing_reads_it(provider):
+    """The schema used to advertise `mode` and `orchestrator_url`. Neither was
+    ever read — `_mode()` reads DISPATCH_MODE from the environment on every
+    call, and DispatchHttpClient reads ORCHESTRATOR_URL/ORCHESTRATOR_KEY from
+    the environment at construction. A host UI writing those keys would change
+    nothing while appearing to work, so they are gone rather than decorative."""
+    assert provider.get_config_schema() == []
 
-    assert "mode" in keys
-    assert "orchestrator_url" in keys
+
+def test_list_teammates_success_carries_ok_like_its_failures_do(provider, monkeypatch):
+    """One tool must not answer in two incompatible shapes. The success payload
+    had no `ok` field while the failure payload did, and the system prompt at
+    provider.py's _PROMPT_BLOCK instructs the model to distinguish refusals
+    from answers."""
+    monkeypatch.setenv("DISPATCH_MODE", "direct")
+    monkeypatch.setattr(
+        provider._client, "get",
+        lambda path, params: {"ok": True, "mode": "direct",
+                              "teammates": [{"agent_id": "karl-m"}]},
+    )
+
+    body = json.loads(provider.handle_tool_call("list_teammates", {}))
+
+    assert body["ok"] is True
+    assert body["teammates"] == [{"agent_id": "karl-m"}]
+
+
+def test_a_server_that_predates_the_ok_field_is_filled_in(provider, monkeypatch):
+    """Plugin and orchestrator are deployed separately and can skew. A 200 with
+    a listing but no `ok` is a success, so it is filled in rather than handed
+    to the model in a shape the prompt never taught it to read."""
+    monkeypatch.setenv("DISPATCH_MODE", "direct")
+    monkeypatch.setattr(
+        provider._client, "get",
+        lambda path, params: {"mode": "direct", "teammates": []},
+    )
+
+    assert json.loads(provider.handle_tool_call("list_teammates", {}))["ok"] is True
+
+
+def test_a_server_refusal_is_never_overwritten_as_ok(provider, monkeypatch):
+    """The fill-in must only apply when `ok` is absent. Overriding a server's
+    `ok: false` would turn a refusal into an answer, the one failure this whole
+    design exists to prevent."""
+    monkeypatch.setenv("DISPATCH_MODE", "direct")
+    monkeypatch.setattr(
+        provider._client, "get",
+        lambda path, params: {"ok": False, "mode": "off", "teammates": [],
+                              "reason": "not_enabled"},
+    )
+
+    body = json.loads(provider.handle_tool_call("list_teammates", {}))
+
+    assert body["ok"] is False
+    assert body["reason"] == "not_enabled"
+
+
+def test_list_teammates_sends_the_session_id(provider, monkeypatch):
+    """The orchestrator filters the roster by the human resolved from this
+    session. Without it there is no tier and the listing is empty."""
+    monkeypatch.setenv("DISPATCH_MODE", "direct")
+    sent = {}
+
+    def fake_get(path, params):
+        sent["params"] = params
+        return {"ok": True, "teammates": []}
+
+    monkeypatch.setattr(provider._client, "get", fake_get)
+    provider.handle_tool_call("list_teammates", {})
+
+    assert sent["params"] == {"agent": "billie", "session_id": "sess-1"}
 
 
 def test_handle_tool_call_off_mode_refuses_without_any_http_call(provider, monkeypatch):

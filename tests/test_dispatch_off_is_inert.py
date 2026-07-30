@@ -75,3 +75,59 @@ def test_consult_in_off_mode_never_reaches_a_gateway(monkeypatch, fake_env):
     assert r.json()["ok"] is False
     assert r.json()["reason"] == "not_enabled"
     assert called == []
+
+
+def test_teammates_in_off_mode_enumerates_nothing(monkeypatch, fake_env):
+    """The consult path was pinned here; the listing was not, and it never
+    consulted current_mode() at all. In off mode it built the full roster and
+    stamped "mode": "off" on it — so any holder of the shared ORCHESTRATOR_KEY,
+    which is every profile on the box, could enumerate every agent's id,
+    display name, subtitle and speed class on a box where dispatch was
+    supposedly disabled.
+
+    Same discipline as the consult test above: build_roster is patched to
+    return a real peer, so the ONLY thing standing between this request and
+    that peer's details in the response body is the off-mode guard. Verified by
+    deleting the `if mode == MODE_OFF:` block in teammates() — this test then
+    fails on the roster contents.
+    """
+    from src.api.main import create_app
+    from src.dispatch.types import Teammate
+
+    monkeypatch.setattr("src.api.dispatch.get_session_owner", lambda a, s: "u-1")
+    monkeypatch.setattr("src.api.dispatch.resolve_tier", lambda i, u: "account_admin")
+    monkeypatch.setattr(
+        "src.api.dispatch.build_roster",
+        lambda *a, **kw: [Teammate("karl-m", "Karl M", "Email ops",
+                                   "gpt-5.6-terra", "fast", True, scope="user")],
+    )
+
+    r = TestClient(create_app()).get(
+        "/v1/dispatch/teammates?agent=billie&session_id=s1", headers=AUTH)
+
+    body = r.json()
+    assert body["ok"] is False
+    assert body["reason"] == "not_enabled"
+    assert body["teammates"] == []
+    # Not one field of the real roster may appear — not even the count.
+    assert "karl-m" not in str(body)
+    assert "Karl M" not in str(body)
+    assert "Email ops" not in str(body)
+
+
+def test_teammates_in_off_mode_resolves_no_provenance(monkeypatch, fake_env):
+    """Off is inert end to end: the mode check comes before provenance
+    resolution, so a disabled box makes no Supabase call for a listing either.
+    Deleting the off-mode guard makes get_session_owner fire and this fails.
+    """
+    from src.api.main import create_app
+
+    looked_up = []
+    monkeypatch.setattr("src.api.dispatch.get_session_owner",
+                        lambda a, s: looked_up.append((a, s)))
+    monkeypatch.setattr("src.api.dispatch.build_roster", lambda *a, **kw: [])
+
+    TestClient(create_app()).get(
+        "/v1/dispatch/teammates?agent=billie&session_id=s1", headers=AUTH)
+
+    assert looked_up == []

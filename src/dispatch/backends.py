@@ -10,9 +10,11 @@ import logging
 from src.dispatch.types import (
     MODE_DIRECT,
     MODE_OFF,
+    REASON_MISCONFIGURED,
     REASON_NOT_ENABLED,
     REASON_PEER_UNAVAILABLE,
     REASON_TIMEOUT,
+    ConsultPost,
     ConsultRequest,
     ConsultResult,
 )
@@ -27,7 +29,8 @@ _PROMPT = (
 )
 
 
-def consult_off(req: ConsultRequest, peer_port: int, gateway_key: str, post=None,
+def consult_off(req: ConsultRequest, peer_port: int, gateway_key: str,
+                post: ConsultPost | None = None,
                 timeout: float = 30.0) -> ConsultResult:
     """Refuse without touching the network. Never calls `post`.
 
@@ -51,10 +54,25 @@ def consult_direct(
     req: ConsultRequest,
     peer_port: int,
     gateway_key: str,
-    post,
+    post: ConsultPost,
     timeout: float = 30.0,
 ) -> ConsultResult:
     """Ask the peer's gateway synchronously and return its reply."""
+    # scripts/install.sh writes HERMES_GATEWAY_KEY= blank for the operator to
+    # paste into later. Sending `Bearer ` to the peer gets a 401, which the
+    # except branch below would report as peer_unavailable -- sending the
+    # operator to check a gateway that is running perfectly well. Refuse before
+    # the request, naming the thing that is actually wrong. Same shape as
+    # src/persona_polish.py:38-39, which returns early rather than send a
+    # bearer-less Authorization header.
+    if not gateway_key:
+        return ConsultResult.refused(
+            REASON_MISCONFIGURED,
+            "HERMES_GATEWAY_KEY is not set on the orchestrator — the peer was "
+            "never contacted; this is orchestrator configuration, not the peer",
+            peer=req.to_agent,
+        )
+
     url = f"http://127.0.0.1:{peer_port}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {gateway_key}",
@@ -73,11 +91,21 @@ def consult_direct(
     try:
         data = post(url, headers, body, timeout)
     except TimeoutError as exc:
+        # Logged, not just returned: a refusal reaches the calling model and
+        # then vanishes. This is the only record an operator has that the peer
+        # was slow rather than the plugin's own client budget expiring first.
+        _logger.warning("dispatch: consult %s -> %s (port %s) timed out after %ss",
+                        req.from_agent, req.to_agent, peer_port, timeout)
         return ConsultResult.refused(
             REASON_TIMEOUT, f"{req.to_agent} did not answer in {timeout:g}s: {exc}",
             peer=req.to_agent,
         )
     except Exception as exc:  # noqa: BLE001 — every failure is a structured refusal
+        # Same reason, and more pressing: this branch is where a rotated or
+        # blank gateway key, a dead peer, and a malformed URL all land, and
+        # without a log line none of them is diagnosable after the fact.
+        _logger.warning("dispatch: consult %s -> %s (port %s) failed",
+                        req.from_agent, req.to_agent, peer_port, exc_info=True)
         return ConsultResult.refused(
             REASON_PEER_UNAVAILABLE, f"{exc}", peer=req.to_agent
         )

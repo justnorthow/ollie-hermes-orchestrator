@@ -6,6 +6,7 @@ agent narrating a plausible reply it never received, which is indistinguishable
 from a real answer to the human reading the transcript.
 """
 from dataclasses import dataclass
+from typing import Protocol
 
 MODE_OFF = "off"
 MODE_DIRECT = "direct"
@@ -25,6 +26,28 @@ REASON_PEER_UNAVAILABLE = "peer_unavailable"
 #: peer_unavailable: that one sends the operator to check the peer's gateway,
 #: which is running fine.
 REASON_MISCONFIGURED = "misconfigured"
+
+
+class ConsultPost(Protocol):
+    """The peer-gateway POST seam injected into consult_direct.
+
+    Distinct from AuditPost by arity: this one takes a per-call `timeout` and
+    returns the decoded body. The two seams are structurally incompatible on
+    purpose -- swapping them used to fail only at runtime, inside audit.py's
+    best-effort `except`, i.e. as a silently dropped audit row.
+    """
+
+    def __call__(self, url: str, headers: dict, json: dict,
+                 timeout: float) -> dict: ...
+
+
+class AuditPost(Protocol):
+    """The governance_events POST seam injected into record_consult.
+
+    No timeout parameter (the audit sink owns its own) and no return value.
+    """
+
+    def __call__(self, url: str, headers: dict, json: dict) -> None: ...
 
 
 @dataclass(frozen=True)

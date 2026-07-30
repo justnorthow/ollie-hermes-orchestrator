@@ -118,16 +118,18 @@ def port_for(agent: str, entries: list) -> int | None:
 
 
 def _gateway_key() -> str:
-    return os.environ.get("HERMES_GATEWAY_KEY", "")
+    # .strip() matches src/api/runs.py:179. A key pasted with a trailing newline
+    # would otherwise be sent as-is and 401 at the peer.
+    return os.environ.get("HERMES_GATEWAY_KEY", "").strip()
 
 
-def _post(url, headers, json, timeout):
+def _post(url: str, headers: dict, json: dict, timeout: float) -> dict:
     resp = httpx.post(url, headers=headers, json=json, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
 
-def _audit_post(url, headers, json):
+def _audit_post(url: str, headers: dict, json: dict) -> None:
     httpx.post(url, headers=headers, json=json,
                timeout=_AUDIT_TIMEOUT).raise_for_status()
 
