@@ -49,7 +49,7 @@ def test_consult_returns_the_peer_answer(client, monkeypatch):
         "src.api.dispatch.build_roster",
         lambda *a, **kw: [Teammate("karl-m", "K", None, "gpt-5.6-terra", "fast", True)],
     )
-    monkeypatch.setattr("src.api.dispatch.port_for", lambda agent: 8643)
+    monkeypatch.setattr("src.api.dispatch.port_for", lambda agent, entries: 8643)
     monkeypatch.setattr(
         "src.api.dispatch.backend_for",
         lambda mode: (lambda req, port, key, post, **kw:
@@ -67,9 +67,25 @@ def test_consult_returns_the_peer_answer(client, monkeypatch):
 
 
 def test_unresolvable_session_is_refused_and_never_reaches_a_backend(client, monkeypatch):
-    """Fail-closed at the API boundary: no provenance, no dispatch."""
+    """Fail-closed at the API boundary: no provenance, no dispatch.
+
+    build_roster and port_for are patched to succeed (a real, consultable peer),
+    exactly as the sibling happy-path tests do, so the *only* thing standing between
+    this request and a backend call is the unresolvable-origin guard. Without that —
+    verified by temporarily commenting out the `if origin is None:` block in
+    src/api/dispatch.py — check() passes (authority.check never reads origin),
+    port_for resolves, and backend_for is reached: this test then fails on
+    `called == []`. With the guard restored it passes again.
+    """
+    from src.dispatch.types import Teammate
+
     called = []
     monkeypatch.setattr("src.api.dispatch.get_session_owner", lambda a, s: None)
+    monkeypatch.setattr(
+        "src.api.dispatch.build_roster",
+        lambda *a, **kw: [Teammate("karl-m", "K", None, "gpt-5.6-terra", "fast", True)],
+    )
+    monkeypatch.setattr("src.api.dispatch.port_for", lambda agent, entries: 8643)
     monkeypatch.setattr("src.api.dispatch.backend_for",
                         lambda mode: called.append(mode))
 
@@ -92,7 +108,7 @@ def test_caller_supplied_identity_is_ignored(client, monkeypatch):
         "src.api.dispatch.build_roster",
         lambda *a, **kw: [Teammate("karl-m", "K", None, "gpt-5.6-terra", "fast", True)],
     )
-    monkeypatch.setattr("src.api.dispatch.port_for", lambda agent: 8643)
+    monkeypatch.setattr("src.api.dispatch.port_for", lambda agent, entries: 8643)
     monkeypatch.setattr(
         "src.api.dispatch.backend_for",
         lambda mode: (lambda req, port, key, post, **kw:
@@ -129,3 +145,58 @@ def test_unknown_peer_is_refused(client, monkeypatch):
     })
 
     assert r.json()["reason"] == "unknown_peer"
+
+
+def test_roster_resolves_from_config_default_when_env_var_unset(fake_env, monkeypatch):
+    """dispatch must read cfg.hermes_stack_dir (resolved once by Config.load()), not
+    os.environ["HERMES_STACK_DIR"] directly. HERMES_STACK_DIR is a documented-optional
+    override (.env.example) and Config.load() already defaults hermes_stack_dir to
+    $HOME/hermes-stack when it's unset (src/config.py:27) — fake_env's stack fixture
+    lives at exactly that default path, with a real AGENTS_JSON=[] .env inside it.
+
+    Reading the env var directly (dispatch.py's original _env_path) instead resolves
+    a relative, nonexistent ".env" path on a default install and raises
+    FileNotFoundError -- an unhandled 500. This test builds its own app AFTER
+    deleting the var, so Config.load() (called inside create_app()) computes the
+    default itself; using the shared `client` fixture would not catch this, since
+    that fixture's app is already built (and its config already resolved) with the
+    var still set.
+    """
+    monkeypatch.delenv("HERMES_STACK_DIR", raising=False)
+    from src.api.main import create_app
+
+    local_client = TestClient(create_app())
+
+    r = local_client.get("/v1/dispatch/teammates?agent=billie", headers=AUTH)
+
+    assert r.status_code == 200
+    assert r.json()["teammates"] == []
+
+
+def test_unimplemented_mode_is_refused_not_500(client, monkeypatch):
+    """DISPATCH_MODE=local/linear are VALID_MODES (src/dispatch/types.py) with no
+    backend driver yet (src/dispatch/backends.py only wires off and direct). That
+    must become a structured not_enabled refusal, not an unhandled 500 -- and must
+    never reach port_for, since the mode is checked before any roster/port lookup.
+    """
+    from src.dispatch.types import Teammate
+
+    monkeypatch.setenv("DISPATCH_MODE", "local")
+    monkeypatch.setattr(
+        "src.api.dispatch.build_roster",
+        lambda *a, **kw: [Teammate("karl-m", "K", None, "gpt-5.6-terra", "fast", True)],
+    )
+    called = []
+    monkeypatch.setattr("src.api.dispatch.port_for",
+                        lambda agent, entries: called.append(agent) or 8643)
+
+    r = client.post("/v1/dispatch/consult", headers=AUTH, json={
+        "from_agent": "billie", "session_id": "s1",
+        "to_agent": "karl-m", "question": "q",
+    })
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["reason"] == "not_enabled"
+    assert called == []

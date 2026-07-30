@@ -53,18 +53,23 @@ def current_mode() -> str:
 
 
 def _env_path(cfg) -> Path:
-    # read_agents() requires a Path (it calls .read_text() on its argument), matching
-    # every other call site in this codebase (e.g. src/api/main.py:
-    # `read_agents(cfg.hermes_stack_dir / ".env")`). The brief's original
-    # `os.path.join(...)` returns a plain str, which raises
-    # AttributeError: 'str' object has no attribute 'read_text' — confirmed by running
-    # this task's tests. Wrapping in Path() is the minimal fix that matches
-    # read_agents' actual contract.
-    return Path(os.environ.get("HERMES_STACK_DIR", "")) / ".env"
+    # Matches src/api/authz.py:28-29 (same name, same signature) and every other
+    # read_agents call site in this codebase. cfg.hermes_stack_dir is resolved once
+    # by Config.load() and already defaults to $HOME/hermes-stack when
+    # HERMES_STACK_DIR is unset (src/config.py:27) -- HERMES_STACK_DIR is a
+    # documented-optional override (.env.example), not a required var. Reading
+    # os.environ["HERMES_STACK_DIR"] directly here (the brief's original code) skips
+    # that default: on a default install the var is unset, and dispatch would look
+    # for .env at a relative, nonexistent path instead of the real stack dir.
+    return cfg.hermes_stack_dir / ".env"
 
 
-def port_for(agent: str) -> int | None:
-    for entry in read_agents(_env_path(None)):
+def _agents(cfg) -> list:
+    return read_agents(_env_path(cfg))
+
+
+def port_for(agent: str, entries: list) -> int | None:
+    for entry in entries:
         if entry.id == agent:
             return entry.gateway_port
     return None
@@ -84,13 +89,13 @@ def _audit_post(url, headers, json):
     httpx.post(url, headers=headers, json=json, timeout=10.0).raise_for_status()
 
 
-def _roster_for(agent: str):
-    return build_roster(read_agents(_env_path(None)), MODELS, self_agent=agent)
+def _roster_for(agent: str, entries: list):
+    return build_roster(entries, MODELS, self_agent=agent)
 
 
 @router.get("/v1/dispatch/teammates")
-def teammates(agent: str):
-    roster = _roster_for(agent)
+def teammates(agent: str, request: Request):
+    roster = _roster_for(agent, _agents(request.app.state.config))
     return {
         "mode": current_mode(),
         "teammates": [
@@ -117,8 +122,10 @@ def consult(body: ConsultBody, request: Request):
     )
 
     try:
-        instance_id = request.app.state.config.instance_id
+        cfg = request.app.state.config
+        instance_id = cfg.instance_id
     except Exception:
+        cfg = None
         instance_id = None
 
     origin = resolve_origin(
@@ -129,6 +136,13 @@ def consult(body: ConsultBody, request: Request):
     )
     if origin is None:
         # Fail closed. No provenance, no dispatch, and no backend is consulted.
+        # This is the highest-signal security event on this endpoint (an agent
+        # process enumerating session ids), so it must leave a trace even though
+        # there is no origin yet to attribute a governance_events row to.
+        _logger.warning(
+            "dispatch: unresolvable provenance for %s/%s",
+            req.from_agent, req.session_id,
+        )
         return ConsultResult.refused(
             REASON_FORBIDDEN,
             "could not establish which human this request acts for",
@@ -147,12 +161,32 @@ def consult(body: ConsultBody, request: Request):
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
         return refusal.__dict__
 
-    refusal = check(req, _roster_for(req.from_agent), origin, caps=Caps())
+    # A mode can be VALID (src/dispatch/types.py) without a backend driver existing
+    # for it yet (local/linear in this slice — src/dispatch/backends.py only wires
+    # off and direct). Resolving the driver here, before any roster or port lookup,
+    # turns that into a structured refusal instead of an unhandled 500 reaching the
+    # calling model as an empty tool result.
+    try:
+        driver = backend_for(mode)
+    except ValueError:
+        refusal = ConsultResult.refused(
+            REASON_NOT_ENABLED,
+            f"dispatch mode {mode!r} is not implemented on this instance",
+            peer=req.to_agent,
+        )
+        record_consult(req, refusal, origin, instance_id, post=_audit_post)
+        return refusal.__dict__
+
+    # One read of AGENTS_JSON, shared by the roster check and the port lookup below
+    # (previously read and JSON-parsed twice per request).
+    entries = _agents(cfg)
+
+    refusal = check(req, _roster_for(req.from_agent, entries), origin, caps=Caps())
     if refusal is not None:
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
         return refusal.__dict__
 
-    port = port_for(req.to_agent)
+    port = port_for(req.to_agent, entries)
     if port is None:
         refusal = ConsultResult.refused(
             REASON_FORBIDDEN, "peer has no gateway port", peer=req.to_agent
@@ -160,7 +194,6 @@ def consult(body: ConsultBody, request: Request):
         record_consult(req, refusal, origin, instance_id, post=_audit_post)
         return refusal.__dict__
 
-    result = backend_for(mode)(req, port, _gateway_key(), post=_post,
-                               timeout=_GATEWAY_TIMEOUT)
+    result = driver(req, port, _gateway_key(), post=_post, timeout=_GATEWAY_TIMEOUT)
     record_consult(req, result, origin, instance_id, post=_audit_post)
     return result.__dict__
