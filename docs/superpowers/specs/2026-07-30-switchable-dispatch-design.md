@@ -348,19 +348,40 @@ anyway).
 
 ## Slices
 
-1. **Protocol + core.** `dispatch_tasks` migration (install repo), `src/dispatch/`
-   interface, provenance resolution reusing `get_session_owner`, authority + caps,
-   `governance_events` writes, backend registry with `off` + `direct`. Ships
-   `off`/`direct`.
+1. **Protocol + core.** `src/dispatch/` interface, provenance resolution reusing
+   `get_session_owner`, authority + caps, `governance_events` writes, backend
+   registry with `off` + `direct`. Ships `off`/`direct`.
 2. **The plugin.** `hermes-dispatch` via `hermes plugins install`; tool schemas,
    system-prompt block, config schema. *Billie can consult Karl at the end of this
    slice.*
-3. **Local backend.** Queue driver, orchestrator heartbeat timer, stale sweep.
+3. **Local backend.** `dispatch_tasks` migration (install repo), queue driver,
+   orchestrator heartbeat timer, stale sweep.
 4. **Dashboard.** Queue view, approve/reject on `pending_approval`, mode selector.
 5. **Linear backend.** Open Engine adapter behind the settled interface.
 
-Slices 1–2 have no dependency on the Supabase app-schemas pivot. Slice 3 needs the
-`ollie-core` migration chain, which is stable.
+**Scope decision, JB 2026-07-30: build slices 1–2 only, `direct`-only to start.**
+
+That is a smaller change than it first appears, and three dependencies drop out
+entirely:
+
+- **No migration.** `dispatch_tasks` exists to hold a *queue*; `direct` has none. The
+  migration moves to slice 3, so slices 1–2 touch no database schema and no install
+  repo at all — they are orchestrator changes plus one new plugin.
+- **No per-agent class accept-list.** `assign` is disabled in `direct`, so the
+  under-declared-`task_class` hole (§3) is unreachable: a consult is a `read` by
+  construction. Risk 7 is deferred with slice 3.
+- **No heartbeat, no stale sweep, no dashboard queue view.**
+
+What remains binding: provenance resolution, authority, the caps, the cheap-peer
+rule, the structured failure contract, `governance_events` writes, and `off` being
+provably inert.
+
+**On the provenance spike (Risk 1):** it does not block implementation, because the
+resolution path is fail-closed. If the `session_id` a plugin receives does not match
+`agent_sessions.hermes_session_id`, `get_session_owner` returns `None` and dispatch
+**refuses every request** rather than defaulting to a permissive identity. A mismatch
+is therefore loud and safe on first use rather than silent and dangerous — the first
+real consult on a box *is* the spike. Build it; do not wait for it.
 
 ## Relationship to the catalog work
 
