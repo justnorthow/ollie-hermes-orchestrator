@@ -84,3 +84,42 @@ def test_live_catalog_is_valid():
 
     errors = validate_catalog(MODELS, _load_known())
     assert errors == [], "catalog validation failed:\n" + "\n".join(errors)
+
+
+def test_every_entry_has_metadata_fields():
+    from src.catalog import MODELS
+
+    for entry in MODELS:
+        assert entry.get("speed_class") in ("fast", "heavy"), entry
+        assert isinstance(entry.get("verified_at"), str), entry
+
+
+def test_price_may_be_absent_only_on_unverified_entries():
+    """A missing price is honest for an unreviewed entry. A verified entry with
+    no price means someone signed off without recording the cost."""
+    from src.catalog import MODELS
+
+    for entry in MODELS:
+        has_price = isinstance(entry.get("price_in"), (int, float)) and isinstance(
+            entry.get("price_out"), (int, float)
+        )
+        if entry["verified_at"] != "never":
+            assert has_price, f"verified entry is missing a price: {entry}"
+
+
+def test_long_context_threshold_shape_when_present():
+    from src.catalog import MODELS
+
+    for entry in MODELS:
+        threshold = entry.get("long_context_threshold")
+        if threshold is None:
+            continue
+        assert set(threshold) == {"tokens", "input_multiplier", "output_multiplier"}, entry
+        assert threshold["tokens"] > 0
+
+
+def test_list_models_preserves_existing_consumer_contract():
+    from src.catalog import list_models
+
+    for entry in list_models():
+        assert "id" in entry and "provider" in entry and "label" in entry
