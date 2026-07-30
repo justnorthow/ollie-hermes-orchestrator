@@ -1,0 +1,5 @@
+name: dispatch
+version: "1.0.0"
+description: "Agent-to-agent consult for Hermes agents on an Ollie box"
+author: "JNOW"
+min_hermes_version: "0.13.0"
