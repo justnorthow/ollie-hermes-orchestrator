@@ -1,5 +1,3 @@
-import pytest
-
 from src.catalog_rules import id_format_errors, validate_catalog
 
 
@@ -57,3 +55,32 @@ def test_validate_catalog_flags_missing_required_field():
 def test_validate_catalog_passes_clean_input():
     models = [{"provider": "openai", "id": "gpt-5.5", "label": "GPT-5.5"}]
     assert validate_catalog(models, {"openai": ["gpt-5.5"]}) == []
+
+
+import json
+from pathlib import Path
+
+KNOWN_MODELS_PATH = Path(__file__).parent / "fixtures" / "known_models.json"
+
+
+def _load_known() -> dict[str, list[str]]:
+    raw = json.loads(KNOWN_MODELS_PATH.read_text(encoding="utf-8"))
+    return {k: v for k, v in raw.items() if not k.startswith("_")}
+
+
+def test_known_models_fixture_is_wellformed():
+    known = _load_known()
+    assert known, "fixture must list at least one provider"
+    for provider, ids in known.items():
+        assert isinstance(ids, list) and ids, f"{provider} must have a non-empty id list"
+        for model_id in ids:
+            assert id_format_errors(provider, model_id) == [], (
+                f"fixture itself contains a malformed id: {provider}/{model_id}"
+            )
+
+
+def test_live_catalog_is_valid():
+    from src.catalog import MODELS
+
+    errors = validate_catalog(MODELS, _load_known())
+    assert errors == [], "catalog validation failed:\n" + "\n".join(errors)
