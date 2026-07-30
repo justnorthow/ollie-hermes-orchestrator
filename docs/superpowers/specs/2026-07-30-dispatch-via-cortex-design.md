@@ -115,7 +115,7 @@ is consult-only.
 
 ## Deployment prerequisites
 
-These are configuration, not code, and both must be true before enabling dispatch
+One configuration change is required before enabling dispatch
 on the GetBilled box.
 
 ### 1. A consultable specialist must run a `fast` model
@@ -135,28 +135,26 @@ consults need the fast class.
 Without this change slice 1 delivers nothing observable, which is worth knowing
 before building rather than after.
 
-### 2. Scope and tier must actually admit the people involved
+### 2. Nothing — scope no longer gates consults
 
-The consult roster is filtered by `can_reach(origin.tier, peer.scope,
-peer.manager_visible)` — the same rule governing direct access. This has two
-consequences people will trip on:
+An earlier draft of this spec listed a scope/tier prerequisite here. It no
+longer applies: the roster filter was removed on 2026-07-30.
 
-- A peer the human could not reach directly is **absent** from `list_teammates`
-  and refuses as `unknown_peer`, deliberately indistinguishable from an agent
-  that does not exist. Correct, and it will look like a bug.
-- Billie is now `scope: "user"` on the GetBilled box (changed 2026-07-30) so any
-  signed-in user reaches her. **Karl M remains `scope: "company"` with
-  `manager_visible: false`**, so only `account_admin`+ can consult him. A
-  `member`-tier user talking to Billie will not see Karl at all.
+`scope` and `manager_visible` govern how a **human** reaches an agent, so a
+user is not left working out which specialist to ask. They do not limit which
+peers an agent may consult — any agent may consult any agent. `list_teammates`
+returns the whole bench at every tier.
 
-Also: `user_roles` on the GetBilled instance has exactly one row, a
-`platform_operator`. **Kartik has no role row**, and `resolve_tier` fail-closes
-to `member` — so today he could reach Billie (scope user) but not Karl. If he
-should be able to consult Karl, he needs an `account_admin` row, or Karl needs
-`manager_visible: true` and Kartik a `manager` row.
+The consequence to be deliberate about: enabling dispatch widens effective
+information access without changing any tier or scope, because anyone who can
+reach an agent can reach, through it, what every other agent knows. It is
+bounded by consults being read-only, and every crossing is stamped on the audit
+row as `beyond_human_reach` so it stays auditable after the fact.
 
-Decide this deliberately. It is an access-control decision, not a dispatch
-setting.
+Billie is `scope: "user"` on the GetBilled box (changed 2026-07-30) so any
+signed-in user reaches her. Karl M remains `scope: "company"`. That still
+governs whether a human can open Karl **directly** — it no longer affects
+whether Billie can consult him on their behalf.
 
 ## Testing
 

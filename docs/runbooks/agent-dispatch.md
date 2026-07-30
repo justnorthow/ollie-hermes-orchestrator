@@ -97,16 +97,34 @@ hermes plugins install <owner/repo>   # takes a repo, not a subdirectory
 # restart that profile's gateway
 ```
 
-### 3. Access control is the human's, not the agent's
+### 3. Any agent may consult any agent — on purpose
 
-Enabling dispatch does **not** widen who can reach which agent. The roster a
-calling agent sees is filtered by `can_reach(tier, scope, manager_visible)` —
-the same rule that decides what the dashboard shows that human and what a
-direct session read allows. A peer the human could not reach directly is
-absent from `list_teammates` and refuses as `unknown_peer`, identically to an
-agent that does not exist. So if an agent "cannot see" a teammate you expect
-it to see, check the **human's** tier and the peer's `scope` /
-`manager_visible` in `AGENTS_JSON` first — not the dispatch config.
+`scope` and `manager_visible` govern how a **human** reaches an agent: which
+agents appear in their picker, and whether a direct session read is allowed.
+Their job is to spare a user from working out which specialist to go to.
+
+They are deliberately **not** a limit on which peers an agent may consult. A
+chief of staff who could only reach the agents her human could already reach
+would hand that burden straight back to the user, which is the opposite of why
+she exists. So `list_teammates` returns the whole bench at every tier, and a
+consult is never refused for reachability.
+
+**What this means, stated plainly:** anyone who can reach an agent can reach,
+through it, information held by every other agent on the box. Enabling dispatch
+widens effective information access even though it changes no tier and no
+scope. That is the intended trade — and it is bounded by consults being
+**read-only**: `ask_teammate` returns an answer, it cannot send, publish, or
+write. Actions stay behind their own human gate.
+
+**It is recorded.** When the origin human's own tier would not have opened the
+peer directly, the `governance_events` row carries
+`findings[].beyond_human_reach = true`. Nothing is blocked; the point is that
+"did anyone reach something through an agent that they could not reach
+themselves?" stays an answerable question after the fact. Query on that field.
+
+If an agent genuinely "cannot see" a teammate, it is not a scope problem —
+check that the peer is in `AGENTS_JSON` at all, and that its model is
+`fast`-class (see consult eligibility below).
 
 Default is `off`. In `off` mode the plugin contributes **zero** tool schemas
 and **zero** system-prompt text — an agent's context is byte-identical to a

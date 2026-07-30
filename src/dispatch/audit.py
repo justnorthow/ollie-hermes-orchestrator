@@ -22,6 +22,7 @@ def record_consult(
     origin: Origin,
     instance_id: str | None,
     post: AuditPost,
+    beyond_human_reach: bool = False,
 ) -> None:
     """Append one dispatch_consult row. Best-effort — never raises.
 
@@ -30,6 +31,14 @@ def record_consult(
     Caps.question_cap in authority.check(), the chain by the API boundary in
     src/api/dispatch.py. This function does not re-bound them; it is on the
     failure path for a request that has already been admitted.
+
+    `beyond_human_reach` records that the origin human could not have opened
+    this peer directly — their `scope`/`manager_visible` tier does not admit it.
+    It is a fact about the consult, NOT a refusal: any agent may consult any
+    agent by design, because the whole point of a chief of staff is that a user
+    does not have to work out which specialist to go to. What it buys is that
+    "did anyone reach something through an agent that they could not reach
+    themselves?" stays an answerable question after the fact.
     """
     url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -59,7 +68,11 @@ def record_consult(
                 "event_type": "dispatch_consult",
                 "status": "ok" if result.ok else "flagged",
                 "title": f"{req.from_agent} -> {req.to_agent}",
-                "findings": [{"text": "chain", "chain": list(req.chain)}],
+                "findings": [
+                    {"text": "chain", "chain": list(req.chain)},
+                    {"text": "beyond_human_reach",
+                     "beyond_human_reach": bool(beyond_human_reach)},
+                ],
                 "content": content,
                 "run_id": None,
                 "instance_id": instance_id,

@@ -5,10 +5,16 @@ provenance resolvable rather than asserted: this module derives the human from
 `agent_sessions` and the caller has no way to influence the answer.
 
 This module is also the only place the pure logic in src/dispatch/ is wired to
-the orchestrator's own rules — `can_reach` from src/api/authz.py (whose peers a
-human may see at all) and the process-wide in-flight registry (how deep a
-consult chain may go). Both are injected rather than imported by src/dispatch/,
-which keeps that package free of src/api/ and of network-capable modules.
+the orchestrator's own rules — `can_reach` from src/api/authz.py and the
+process-wide in-flight registry (how deep a consult chain may go). Both are
+injected rather than imported by src/dispatch/, which keeps that package free
+of src/api/ and of network-capable modules.
+
+`can_reach` is used here to ANNOTATE, not to gate: any agent may consult any
+agent, and the row records when the origin human's own tier would not have
+opened that peer directly. The gate it once fed was removed deliberately —
+`scope` keeps a human's picker uncluttered, and making it also bound an agent's
+reach handed the "which specialist do I ask?" burden back to the user.
 """
 import logging
 import os
@@ -28,7 +34,7 @@ from src.dispatch.audit import record_consult
 from src.dispatch.authority import Caps, check, resolve_origin
 from src.dispatch.backends import backend_for
 from src.dispatch.inflight import InFlight
-from src.dispatch.roster import build_roster, visible_to
+from src.dispatch.roster import beyond_human_reach, build_roster
 from src.dispatch.types import (
     MODE_OFF,
     REASON_CAP_EXCEEDED,
@@ -174,16 +180,17 @@ def _body(result: ConsultResult) -> dict:
     }
 
 
-def _roster_for(agent: str, entries: list, tier: str):
-    """Peers `agent` may consult, narrowed to what its human may already reach.
+def _roster_for(agent: str, entries: list):
+    """Every peer `agent` may consult — the whole bench, minus itself.
 
-    The narrowing is the fix for dispatch being a lateral path around the
-    orchestrator's human->agent access control: without it, a member-tier human
-    whose dashboard hides karl-m (company scope, not manager-visible) could ask
-    any agent to ask karl-m, and karl's answer would come back verbatim.
+    Deliberately NOT narrowed by the originating human's tier. `scope` and
+    `manager_visible` keep a human's picker uncluttered so nobody has to
+    remember which agent does what; they are not a limit on the chief of
+    staff's reach. Consults are read-only, so the exposure is information a
+    human could have asked their agent to find anyway. The crossing is stamped
+    on the audit row instead of blocked — see `beyond_human_reach`.
     """
-    return visible_to(build_roster(entries, MODELS, self_agent=agent),
-                      tier, can_reach)
+    return build_roster(entries, MODELS, self_agent=agent)
 
 
 @router.get("/v1/dispatch/teammates")
@@ -223,7 +230,7 @@ def teammates(agent: str, session_id: str, request: Request):
                 "reason": REASON_FORBIDDEN,
                 "detail": "could not establish which human this request acts for"}
 
-    roster = _roster_for(agent, _agents(cfg), origin.tier)
+    roster = _roster_for(agent, _agents(cfg))
     return {
         # `ok` on the success shape too: the plugin returns this payload straight
         # to a model that has been told to distinguish refusals from answers, and
@@ -320,10 +327,18 @@ def consult(body: ConsultBody, request: Request):
     # (previously read and JSON-parsed twice per request).
     entries = _agents(cfg)
 
-    refusal = check(req, _roster_for(req.from_agent, entries, origin.tier),
-                    origin, caps=_CAPS)
+    roster = _roster_for(req.from_agent, entries)
+
+    # Recorded, never enforced: any agent may consult any agent. This only
+    # notes that the origin human's own tier would not have opened this peer
+    # directly, so the question stays answerable later. See roster.py.
+    peer = next((t for t in roster if t.agent_id == req.to_agent), None)
+    crossed = peer is not None and beyond_human_reach(peer, origin.tier, can_reach)
+
+    refusal = check(req, roster, origin, caps=_CAPS)
     if refusal is not None:
-        record_consult(req, refusal, origin, instance_id, post=_audit_post)
+        record_consult(req, refusal, origin, instance_id, post=_audit_post,
+                       beyond_human_reach=crossed)
         return _body(refusal)
 
     port = port_for(req.to_agent, entries)
@@ -331,7 +346,8 @@ def consult(body: ConsultBody, request: Request):
         refusal = ConsultResult.refused(
             REASON_FORBIDDEN, "peer has no gateway port", peer=req.to_agent
         )
-        record_consult(req, refusal, origin, instance_id, post=_audit_post)
+        record_consult(req, refusal, origin, instance_id, post=_audit_post,
+                       beyond_human_reach=crossed)
         return _body(refusal)
 
     # The in-flight hold is the last gate, and it wraps the ONLY call in this
@@ -343,11 +359,13 @@ def consult(body: ConsultBody, request: Request):
             refusal = ConsultResult.refused(
                 REASON_CAP_EXCEEDED, denial, peer=req.to_agent
             )
-            record_consult(req, refusal, origin, instance_id, post=_audit_post)
+            record_consult(req, refusal, origin, instance_id, post=_audit_post,
+                           beyond_human_reach=crossed)
             return _body(refusal)
 
         result = driver(req, port, _gateway_key(), post=_post,
                         timeout=_GATEWAY_TIMEOUT)
 
-    record_consult(req, result, origin, instance_id, post=_audit_post)
+    record_consult(req, result, origin, instance_id, post=_audit_post,
+                   beyond_human_reach=crossed)
     return _body(result)
