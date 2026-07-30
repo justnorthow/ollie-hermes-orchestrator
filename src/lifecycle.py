@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 from src.agents_json import AgentEntry, read_agents, write_agent, remove_agent
-from src import proxy_maps
+from src import proxy_maps, ui_proxy
 from src.config import Config
 from src.lock import async_file_lock
 from src.models import Agent
@@ -158,6 +158,16 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
                 proxy_maps.sync(cfg.orch_env_path, read_agents(env_path))
             except Exception:
                 _logger.warning("proxy map sync failed after create", exc_info=True)
+            # Give the new agent a browser-reachable dashboard. Folded into this
+            # step for the same reason as the map sync (the create modal has
+            # eight hardcoded steps), and best-effort for the same reason: the
+            # agent is fully functional without a listener, and the done-done
+            # gate fails closed on the missing conf.
+            try:
+                ui_proxy.render(cfg.orch_env_path, cfg.systemd_user_dir)
+            except Exception:
+                _logger.warning("hermes-ui proxy render failed after create",
+                                exc_info=True)
             yield _ev("update_agents_json")
             completed_steps.append("update_agents_json")
 
@@ -217,6 +227,14 @@ async def _rollback_create(name: str, completed_steps: list[str], env_path) -> N
             stop_and_remove_service(f"hermes-dashboard-{name}")
         except Exception:
             _logger.warning("rollback: dashboard svc failed", exc_info=True)
+        # The unit is gone again, so re-render to prune any listener the
+        # create had already rendered for it.
+        try:
+            from src.config import Config as _Config
+            _cfg = _Config.load()
+            ui_proxy.render(_cfg.orch_env_path, _cfg.systemd_user_dir)
+        except Exception:
+            _logger.warning("rollback: hermes-ui proxy render failed", exc_info=True)
     if "install_gateway" in completed_steps:
         try:
             stop_and_remove_service(f"hermes-gateway-{name}")
@@ -281,6 +299,14 @@ async def delete_agent(agent_id: str) -> dict:
                             drop_ids=(agent_id,))
         except Exception:
             _logger.warning("delete: proxy map sync failed", exc_info=True)
+        # Prune this agent's listener. The unit is already gone by here, so the
+        # render converges to the surviving set; skipping it would leave nginx
+        # bound to a port whose upstream no longer exists, and section 3b of the
+        # gate would never notice because it iterates units, not confs.
+        try:
+            ui_proxy.render(cfg.orch_env_path, cfg.systemd_user_dir)
+        except Exception:
+            _logger.warning("delete: hermes-ui proxy render failed", exc_info=True)
         # The dashboard bounce is deliberately NOT done here: the dashboard
         # container houses the nginx that proxied this very DELETE, so an
         # inline bounce severs the in-flight response and the browser sees a
