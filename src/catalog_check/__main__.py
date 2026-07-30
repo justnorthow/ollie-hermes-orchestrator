@@ -3,11 +3,16 @@
 Wires fetch -> diff -> report -> sinks and returns an exit code. Exits
 non-zero only on an unknown catalog id; a newly shipped model or an
 unverifiable provider must not turn the weekly run red.
+
+Exit codes: 0 clean, 1 blocking findings (an unknown catalog id), 2 the
+check itself failed unexpectedly (bug, I/O error) — distinct from 1 so a
+GitHub Actions consumer does not report "unknown model ids" for a crash.
 """
 import argparse
 from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
+import traceback
 from typing import Callable
 
 from src.catalog import MODELS
@@ -15,7 +20,7 @@ from src.catalog_check.diff import compute_diff
 from src.catalog_check.providers import SCRAPE_CONFIGS, fetch_all, http_fetch
 from src.catalog_check.sinks import (
     LinearConfig,
-    linear_post,
+    make_linear_post,
     render_report,
     run_sinks,
 )
@@ -47,8 +52,14 @@ def run(root: Path, today: date, fetch: Callable[[str], str]) -> int:
             ]
         )
 
+    linear_config = LinearConfig.from_env()
     statuses = run_sinks(
-        report, diff, root, today, LinearConfig.from_env(), post=linear_post
+        report,
+        diff,
+        root,
+        today,
+        linear_config,
+        post=make_linear_post(linear_config.api_key),
     )
     for name, status in sorted(statuses.items()):
         print(f"sink {name}: {status}")
@@ -63,7 +74,12 @@ def main() -> None:
     args = parser.parse_args()
 
     today = datetime.now(timezone.utc).date()
-    sys.exit(run(args.root, today, fetch=http_fetch))
+    try:
+        code = run(args.root, today, fetch=http_fetch)
+    except Exception:  # noqa: BLE001 — an internal error must exit 2, not crash
+        traceback.print_exc(file=sys.stderr)
+        code = 2
+    sys.exit(code)
 
 
 if __name__ == "__main__":

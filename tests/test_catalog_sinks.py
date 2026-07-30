@@ -1,10 +1,13 @@
 from datetime import date
 
+import httpx
 import pytest
 
 from src.catalog_check.providers import ScrapeConfig
 from src.catalog_check.sinks import (
     LinearConfig,
+    _LINEAR_TIMEOUT,
+    make_linear_post,
     render_report,
     run_sinks,
     write_file_sink,
@@ -56,6 +59,27 @@ def test_report_names_unverifiable_providers():
 
     assert "groq" in report
     assert "403 forbidden" in report
+
+
+def test_report_caps_full_checklists_and_lists_remainder_as_bullets():
+    # An over-matching scrape pattern (or a genuine multi-launch week) must
+    # not turn the report into dozens of 11-item checklists nobody reads.
+    new = [("anthropic", f"claude-candidate-{i}") for i in range(7)]
+    diff = Diff(new=new)
+
+    report = render_report(diff, TODAY, {})
+
+    # First 5 get the full checklist (a heading + the adoption items).
+    for provider, model_id in new[:5]:
+        assert f"### `{provider}` / `{model_id}`" in report
+    # The remaining 2 are one-line bullets under the triage heading, not
+    # full checklists.
+    assert "### Further candidates needing triage" in report
+    for provider, model_id in new[5:]:
+        assert f"- `{provider}` / `{model_id}`" in report
+        assert f"### `{provider}` / `{model_id}`" not in report
+    # The total count is stated somewhere in the report.
+    assert "7" in report
 
 
 def test_report_on_clean_run_says_so():
@@ -194,6 +218,63 @@ def test_run_appends_escalation_block_after_two_consecutive_unverifiable_runs(
     assert "\n\n## Escalation" in report  # blank line separates it, like every other section
 
 
+def test_run_still_raises_on_an_internal_error(tmp_path, monkeypatch):
+    """run()'s own contract is unchanged by the exit-code-2 mapping added to
+    main(): run() itself still propagates an unexpected exception rather
+    than swallowing it. Only main() is responsible for turning that into
+    exit code 2."""
+    from src.catalog_check.__main__ import run
+
+    monkeypatch.setattr(
+        "src.catalog_check.__main__.SCRAPE_CONFIGS",
+        [ScrapeConfig("openai", "https://example.test/o", r"gpt-[0-9.]+", 1)],
+    )
+    monkeypatch.setattr(
+        "src.catalog_check.__main__.MODELS",
+        [{"provider": "openai", "id": "gpt-5.5", "label": "GPT-5.5",
+          "verified_at": "2026-07-01"}],
+    )
+    monkeypatch.setattr(
+        "src.catalog_check.__main__.render_report",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("rendering exploded")),
+    )
+
+    with pytest.raises(RuntimeError, match="rendering exploded"):
+        run(tmp_path, TODAY, fetch=lambda url: "gpt-5.5")
+
+
+def test_main_maps_an_internal_error_to_exit_code_2(tmp_path, monkeypatch):
+    """main() must distinguish exit 1 (blocking findings) from exit 2 (the
+    check itself crashed) — otherwise the GitHub Actions gate reports a
+    false 'unknown model ids' message for what was actually a bug."""
+    import sys
+
+    import src.catalog_check.__main__ as main_mod
+
+    monkeypatch.setattr(
+        main_mod, "SCRAPE_CONFIGS",
+        [ScrapeConfig("openai", "https://example.test/o", r"gpt-[0-9.]+", 1)],
+    )
+    monkeypatch.setattr(
+        main_mod, "MODELS",
+        [{"provider": "openai", "id": "gpt-5.5", "label": "GPT-5.5",
+          "verified_at": "2026-07-01"}],
+    )
+    # Force an internal error without touching the network: http_fetch is
+    # never reached because render_report raises first.
+    monkeypatch.setattr(main_mod, "http_fetch", lambda url: "gpt-5.5")
+    monkeypatch.setattr(
+        main_mod, "render_report",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("rendering exploded")),
+    )
+    monkeypatch.setattr(sys, "argv", ["catalog_check", "--root", str(tmp_path)])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod.main()
+
+    assert exc_info.value.code == 2
+
+
 def test_linear_sink_skipped_when_unconfigured():
     config = LinearConfig(api_key=None, team_id=None)
 
@@ -216,6 +297,27 @@ def test_linear_sink_not_called_on_clean_run():
     assert calls == []
 
 
+def test_linear_sink_not_posted_for_permanent_stale_only_diff():
+    """`stale` entries (e.g. verified_at="never", which is permanent-by-design
+    for at least one catalog entry) must never open a Linear issue on their
+    own — only an `unknown` id (has_blocking_findings) does. Before this
+    fix, gating on `not diff.is_empty` meant a stale-only diff (which is
+    never empty) posted an identical issue every single run, forever."""
+    calls = []
+
+    def post(url, payload):
+        calls.append(payload)
+        return {"data": {"issueCreate": {"issue": {"identifier": "JNO-1"}}}}
+
+    config = LinearConfig(api_key="k", team_id="t")
+    diff = Diff(stale=[("openai", "gpt-5.5", "never")])
+
+    result = write_linear_sink("body", diff, config, post=post)
+
+    assert result is None
+    assert calls == []
+
+
 def test_linear_sink_posts_on_drift():
     def post(url, payload):
         return {"data": {"issueCreate": {"issue": {"identifier": "JNO-42"}}}}
@@ -226,14 +328,16 @@ def test_linear_sink_posts_on_drift():
     assert write_linear_sink("body", diff, config, post=post) == "JNO-42"
 
 
-def test_linear_sink_failure_returns_none_and_does_not_raise():
+def test_linear_sink_failure_surfaces_cause_and_does_not_raise():
     def post(url, payload):
         raise RuntimeError("502 bad gateway")
 
     config = LinearConfig(api_key="k", team_id="t")
     diff = Diff(unknown=[("openai", "gpt-old")])
 
-    assert write_linear_sink("body", diff, config, post=post) is None
+    result = write_linear_sink("body", diff, config, post=post)
+
+    assert result == "failed: RuntimeError: 502 bad gateway"
 
 
 def test_run_sinks_writes_file_even_when_linear_raises(tmp_path):
@@ -251,7 +355,7 @@ def test_run_sinks_writes_file_even_when_linear_raises(tmp_path):
 
     assert (tmp_path / "latest.md").read_text(encoding="utf-8") == "body"
     assert statuses["file"] == "written"
-    assert statuses["linear"] == "failed"
+    assert statuses["linear"] == "failed: RuntimeError: 502"
 
 
 def test_run_sinks_reports_linear_as_skipped_when_unconfigured(tmp_path):
@@ -263,6 +367,31 @@ def test_run_sinks_reports_linear_as_skipped_when_unconfigured(tmp_path):
 
     assert statuses["file"] == "written"
     assert statuses["linear"] == "skipped (not configured)"
+
+
+def test_run_sinks_reports_linear_as_skipped_when_no_blocking_findings(tmp_path):
+    """Configured Linear, but a stale-only diff (never empty, never
+    blocking) must report the accurate status, not the old misleading
+    "skipped (no drift)" wording — there IS drift (a stale entry), it just
+    is not blocking."""
+    calls = []
+
+    def post(url, payload):
+        calls.append(payload)
+        return {"data": {"issueCreate": {"issue": {"identifier": "JNO-1"}}}}
+
+    statuses = run_sinks(
+        "body",
+        Diff(stale=[("openai", "gpt-5.5", "never")]),
+        tmp_path,
+        TODAY,
+        LinearConfig(api_key="k", team_id="t"),
+        post=post,
+    )
+
+    assert statuses["file"] == "written"
+    assert statuses["linear"] == "skipped (no blocking findings)"
+    assert calls == []
 
 
 def test_linear_config_from_env_reads_both_vars(monkeypatch):
@@ -279,3 +408,81 @@ def test_linear_config_partial_env_is_not_configured(monkeypatch):
     monkeypatch.delenv("LINEAR_TEAM_ID", raising=False)
 
     assert LinearConfig.from_env().configured is False
+
+
+# --- make_linear_post transport contract -----------------------------------
+#
+# This is the test that would have caught the original bug: LinearConfig.
+# api_key was read from the environment, used only to compute `configured`,
+# and then never reached the outgoing request — Linear's GraphQL endpoint
+# rejects unauthenticated requests, so every configured run failed silently.
+# httpx.MockTransport lets us assert on the real request the transport
+# builds, offline, with no new dependency (it ships with httpx).
+
+
+def test_make_linear_post_sends_raw_unprefixed_authorization_header():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["authorization"] = request.headers.get("authorization")
+        seen["content_type"] = request.headers.get("content-type")
+        return httpx.Response(
+            200, json={"data": {"issueCreate": {"issue": {"identifier": "JNO-1"}}}}
+        )
+
+    post = make_linear_post("lin_api_secret", transport=httpx.MockTransport(handler))
+    result = post("https://api.linear.app/graphql", {"query": "..."})
+
+    # Linear personal API keys go in Authorization RAW — no "Bearer " prefix.
+    assert seen["authorization"] == "lin_api_secret"
+    assert seen["content_type"] == "application/json"
+    assert result["data"]["issueCreate"]["issue"]["identifier"] == "JNO-1"
+
+
+def test_make_linear_post_sets_timeout():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions["timeout"]
+        return httpx.Response(200, json={"data": {}})
+
+    post = make_linear_post("k", transport=httpx.MockTransport(handler))
+    post("https://api.linear.app/graphql", {})
+
+    assert seen["timeout"]["connect"] == _LINEAR_TIMEOUT
+
+
+def test_make_linear_post_raises_on_non_2xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    post = make_linear_post("bad-key", transport=httpx.MockTransport(handler))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        post("https://api.linear.app/graphql", {"query": "..."})
+
+
+# --- http_fetch transport contract ------------------------------------------
+
+
+def test_http_fetch_returns_text_on_200():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="claude-opus-5 claude-sonnet-5")
+
+    from src.catalog_check.providers import http_fetch
+
+    body = http_fetch(
+        "https://example.test/models", transport=httpx.MockTransport(handler)
+    )
+
+    assert "claude-opus-5" in body
+
+
+def test_http_fetch_raises_on_500():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal error")
+
+    from src.catalog_check.providers import http_fetch
+
+    with pytest.raises(httpx.HTTPStatusError):
+        http_fetch("https://example.test/models", transport=httpx.MockTransport(handler))

@@ -29,6 +29,12 @@ _ADOPTION_CHECKLIST = [
     "Which providers serve it",
 ]
 
+#: Full adoption checklists are expensive to read. A scrape pattern that
+#: over-matches (or a genuine multi-launch week) must not turn the report
+#: into dozens of 11-item checklists nobody reads. Cap it; list the rest as
+#: one-liners under a "further candidates" heading instead.
+_NEW_MODEL_CHECKLIST_CAP = 5
+
 
 def render_report(diff: Diff, today: date, mechanisms: dict[str, str]) -> str:
     """Render the run as markdown. Unknown ids lead, because they are the only
@@ -60,10 +66,24 @@ def render_report(diff: Diff, today: date, mechanisms: dict[str, str]) -> str:
             "`src/catalog.py` and `tests/fixtures/known_models.json` by hand.",
             "",
         ]
-        for provider, model_id in diff.new:
+        checklisted = diff.new[:_NEW_MODEL_CHECKLIST_CAP]
+        remainder = diff.new[_NEW_MODEL_CHECKLIST_CAP:]
+        if remainder:
+            lines.append(
+                f"{len(diff.new)} new ids found; showing full checklists for the "
+                f"first {_NEW_MODEL_CHECKLIST_CAP}."
+            )
+            lines.append("")
+        for provider, model_id in checklisted:
             lines.append(f"### `{provider}` / `{model_id}`")
             lines.append("")
             lines += [f"- [ ] {item}" for item in _ADOPTION_CHECKLIST]
+            lines.append("")
+        if remainder:
+            lines += ["### Further candidates needing triage", ""]
+            lines += [
+                f"- `{provider}` / `{model_id}`" for provider, model_id in remainder
+            ]
             lines.append("")
 
     if diff.unverifiable:
@@ -146,11 +166,38 @@ class LinearConfig:
         return bool(self.api_key and self.team_id)
 
 
-def linear_post(url: str, payload: dict) -> dict:
-    """Real Linear transport. Injected only by __main__ so tests stay offline."""
-    response = httpx.post(url, json=payload, timeout=_LINEAR_TIMEOUT)
-    response.raise_for_status()
-    return response.json()
+def make_linear_post(
+    api_key: str | None, transport: httpx.BaseTransport | None = None
+) -> Callable[[str, dict], dict]:
+    """Build the real Linear transport, bound to its credential.
+
+    The credential is captured in the closure rather than accepted as a
+    function argument so that a credentialless transport cannot be
+    constructed by accident — every caller must supply a key up front.
+
+    `transport` is normally left as None (the real network); tests pass an
+    `httpx.MockTransport` to exercise this function's contract (headers,
+    timeout, raise-on-error) without touching the network.
+    """
+
+    def post(url: str, payload: dict) -> dict:
+        with httpx.Client(transport=transport) as client:
+            response = client.post(
+                url,
+                json=payload,
+                timeout=_LINEAR_TIMEOUT,
+                # Linear personal API keys go in Authorization RAW, with no
+                # "Bearer " prefix — that prefix is for OAuth tokens only.
+                # This looks wrong next to every other API but is correct.
+                headers={
+                    "Authorization": api_key or "",
+                    "Content-Type": "application/json",
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
+    return post
 
 
 def write_linear_sink(
@@ -159,10 +206,11 @@ def write_linear_sink(
     config: LinearConfig,
     post: Callable[[str, dict], dict],
 ) -> str | None:
-    """Open an issue when there is drift. Optional: returns None when
-    unconfigured, when there is nothing to report, or on any failure. Never
-    raises — the file sink is the record and must not be affected."""
-    if not config.configured or diff.is_empty:
+    """Open an issue when there is a blocking finding. Optional: returns None
+    when unconfigured or when there is nothing blocking to report; returns
+    `"failed: ..."` (with the exception detail) on any transport failure.
+    Never raises — the file sink is the record and must not be affected."""
+    if not config.configured or not diff.has_blocking_findings:
         return None
 
     payload = {
@@ -176,8 +224,8 @@ def write_linear_sink(
     try:
         body = post(_LINEAR_URL, payload)
         return body["data"]["issueCreate"]["issue"]["identifier"]
-    except Exception:  # noqa: BLE001 — an optional sink never breaks the run
-        return None
+    except Exception as exc:  # noqa: BLE001 — an optional sink never breaks the run
+        return f"failed: {exc.__class__.__name__}: {exc}"
 
 
 def run_sinks(
@@ -199,11 +247,11 @@ def run_sinks(
         return statuses
 
     identifier = write_linear_sink(report, diff, linear, post=post)
-    if identifier:
-        statuses["linear"] = f"issue {identifier}"
-    elif diff.is_empty:
-        statuses["linear"] = "skipped (no drift)"
+    if identifier is None:
+        statuses["linear"] = "skipped (no blocking findings)"
+    elif identifier.startswith("failed:"):
+        statuses["linear"] = identifier
     else:
-        statuses["linear"] = "failed"
+        statuses["linear"] = f"issue {identifier}"
 
     return statuses

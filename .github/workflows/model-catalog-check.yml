@@ -17,6 +17,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -32,9 +33,18 @@ jobs:
         run: python -m pytest tests/test_catalog_rules.py -v
 
       - name: Check catalog against provider docs
+        # Exit codes from `main()`: 0 clean, 1 blocking findings (an unknown
+        # catalog id), 2 the check itself failed unexpectedly (bug, I/O
+        # error). Captured explicitly rather than via `continue-on-error` +
+        # `steps.check.outcome`, because that pair collapses every non-zero
+        # exit to the same "failure" outcome and cannot tell "1 blocking
+        # finding" apart from "2 internal crash" — see the final gate below.
         id: check
-        continue-on-error: true
-        run: python -m src.catalog_check --root docs/model-catalog
+        run: |
+          set +e
+          python -m src.catalog_check --root docs/model-catalog
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Commit the report
         run: |
@@ -49,7 +59,12 @@ jobs:
           fi
 
       - name: Fail if blocking findings
-        if: steps.check.outcome == 'failure'
         run: |
-          echo "::error::Catalog contains unknown model ids — see docs/model-catalog/latest.md"
-          exit 1
+          code="${{ steps.check.outputs.exit_code }}"
+          if [ "$code" = "1" ]; then
+            echo "::error::Catalog contains unknown model ids — see docs/model-catalog/latest.md"
+            exit 1
+          elif [ "$code" != "0" ]; then
+            echo "::error::Catalog check step itself failed (exit $code) — read the 'Check catalog against provider docs' log above, not latest.md"
+            exit 1
+          fi

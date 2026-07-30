@@ -29,6 +29,12 @@ class ScrapeConfig:
     url: str
     pattern: str
     min_models: int
+    #: Optional regex; any extracted id matching it (via re.search) is
+    #: dropped before the min_models guard runs. Used to strip connective
+    #: prose ("claude-in-amazon-bedrock"), dated snapshot suffixes, and
+    #: versioned aliases that the extraction pattern cannot avoid matching
+    #: on its own without hardcoding known model-family names.
+    reject: str | None = None
 
 
 #: One entry per provider appearing in src.catalog.MODELS.
@@ -38,8 +44,19 @@ SCRAPE_CONFIGS: list[ScrapeConfig] = [
     ScrapeConfig(
         provider="anthropic",
         url="https://platform.claude.com/docs/en/about-claude/models/overview.md",
-        pattern=r"claude-[a-z]+-[a-z0-9\-]+",
+        # Anchored on a numeric version tail so prose like "claude-in-amazon-
+        # bedrock" (no digits) never matches at all, and word-bounded so a
+        # run like "...-and-claude-mythos-5" splits into two clean ids
+        # instead of one fused one. Deliberately family-agnostic — no known
+        # family name is hardcoded — so a brand-new "claude-<newname>-N"
+        # is still discovered.
+        pattern=r"\bclaude-[a-z]+(?:-[a-z]+)?-[0-9]+(?:-[0-9]+)?\b",
         min_models=4,
+        # Belt-and-suspenders for the pattern above: strips connective
+        # prose ("-in-", "-and-", ...), 8-digit dated snapshots (e.g. a
+        # trailing "-20250219" that the pattern's own numeric tail can
+        # accidentally absorb), and "-vN" aliasing suffixes.
+        reject=r"-(?:in|and|on|for|with|or)-|\d{8}|-v[0-9]+$",
     ),
     ScrapeConfig(
         provider="openai",
@@ -56,11 +73,17 @@ SCRAPE_CONFIGS: list[ScrapeConfig] = [
 ]
 
 
-def http_fetch(url: str) -> str:
-    """Real fetcher. Injected only by __main__ so tests stay offline."""
-    response = httpx.get(url, timeout=_TIMEOUT_SECONDS, follow_redirects=True)
-    response.raise_for_status()
-    return response.text
+def http_fetch(url: str, transport: httpx.BaseTransport | None = None) -> str:
+    """Real fetcher. Injected only by __main__ so tests stay offline.
+
+    `transport` is normally left as None (the real network); tests pass an
+    `httpx.MockTransport` to exercise this function's contract (timeout,
+    raise-on-error) without touching the network.
+    """
+    with httpx.Client(transport=transport) as client:
+        response = client.get(url, timeout=_TIMEOUT_SECONDS, follow_redirects=True)
+        response.raise_for_status()
+        return response.text
 
 
 def scrape_provider(
@@ -75,6 +98,10 @@ def scrape_provider(
         )
 
     found = frozenset(m.group(0) for m in re.finditer(config.pattern, body))
+
+    if config.reject:
+        reject_re = re.compile(config.reject)
+        found = frozenset(m for m in found if not reject_re.search(m))
 
     if len(found) < config.min_models:
         return ProviderResult(
