@@ -1,7 +1,9 @@
 """Agent-access authorization: tier (roles.py) x agent scope (agents_json).
 
-Fail-closed. Identity-less callers (no X-Auth-User-Id) are internal/trusted and
-are allowed — same trust boundary as the Phase 1 ownership gate.
+Fail-closed for identified browser users. Identity-less callers reaching these
+helpers are internal/service callers: src.auth.require_bearer rejects an
+identity-less request carrying nginx's X-Ollie-Caller: dashboard marker before
+route authorization runs.
 """
 from pathlib import Path
 
@@ -41,10 +43,10 @@ def _user_id(request: Request) -> str:
 
 
 def check_agent_access(request: Request, agent_id: str, cfg) -> JSONResponse | None:
-    """None if allowed; a 403 response if denied. Identity-less -> allowed."""
+    """None if allowed; a 403 response if denied. Internal service -> allowed."""
     user_id = _user_id(request)
     if not user_id:
-        return None  # trusted internal caller
+        return None  # bearer-authenticated internal caller (dashboard denied earlier)
     sc = agent_scope(agent_id, cfg)
     if sc is None:
         return _FORBIDDEN  # unknown agent — fail closed, don't leak existence

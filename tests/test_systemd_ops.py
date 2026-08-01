@@ -3,7 +3,7 @@ import os
 import pytest
 
 from src.systemd_ops import install_gateway_service, install_dashboard_service, \
-    stop_and_remove_service
+    stop_and_remove_service, write_runtime_sandbox_dropin
 
 
 def test_install_gateway_service_calls_per_profile_install(fake_env):
@@ -13,6 +13,21 @@ def test_install_gateway_service_calls_per_profile_install(fake_env):
     install_gateway_service("paige")
     log = (fake_env["logs"] / "hermes.log").read_text()
     assert "gateway install" in log
+    conf = (fake_env["systemd"] / "hermes-gateway-paige.service.d"
+            / "20-ollie-runtime-sandbox.conf")
+    assert conf.is_file()
+    text = conf.read_text()
+    assert "NoNewPrivileges=yes" in text
+    assert "ProtectHome=tmpfs" in text
+    assert "InaccessiblePaths=-/var/run/docker.sock" in text
+    systemctl = (fake_env["logs"] / "systemctl.log").read_text()
+    assert "daemon-reload" in systemctl
+    assert "try-restart hermes-gateway-paige.service" in systemctl
+
+
+def test_runtime_sandbox_rejects_path_traversal_unit(fake_env):
+    with pytest.raises(ValueError):
+        write_runtime_sandbox_dropin("hermes-gateway-x/../../escape.service")
 
 
 def test_install_dashboard_service_writes_unit_and_enables(fake_env):
@@ -22,6 +37,10 @@ def test_install_dashboard_service_writes_unit_and_enables(fake_env):
     text = unit.read_text()
     assert "--port 9121" in text
     assert "-p paige" in text
+    sandbox = (fake_env["systemd"] / "hermes-dashboard-paige.service.d"
+               / "20-ollie-runtime-sandbox.conf")
+    assert sandbox.is_file()
+    assert "NoNewPrivileges=yes" in sandbox.read_text()
     log = (fake_env["logs"] / "systemctl.log").read_text()
     assert "daemon-reload" in log
     assert "enable --now hermes-dashboard-paige" in log

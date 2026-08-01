@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -33,6 +34,41 @@ RestartSec=5
 WantedBy=default.target
 """
 
+_RUNTIME_SANDBOX = """\
+[Service]
+NoNewPrivileges=yes
+PrivateUsers=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=%h/.hermes
+BindPaths=-%h/.cache
+BindReadOnlyPaths=-%h/.local/bin
+InaccessiblePaths=-/var/run/docker.sock
+InaccessiblePaths=-/run/docker.sock
+InaccessiblePaths=-/run/user/%U/bus
+InaccessiblePaths=-/run/user/%U/systemd
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+UMask=0077
+"""
+
 
 def _systemd_dir() -> Path:
     return Config.load().systemd_user_dir
@@ -58,6 +94,27 @@ def install_gateway_service(name: str) -> None:
         input="y\n" * 10,
         text=True,
     )
+    unit_name = f"hermes-gateway-{name}.service"
+    write_runtime_sandbox_dropin(unit_name)
+    _systemctl("daemon-reload")
+    # The upstream installer normally starts the unit before returning. A
+    # daemon-reload does not retrofit a running process, so apply the sandbox
+    # immediately rather than waiting for a reboot.
+    _systemctl("try-restart", unit_name)
+
+
+def write_runtime_sandbox_dropin(unit_name: str) -> Path:
+    """Contain the autonomous Hermes process tree on a privileged host account."""
+    if not re.fullmatch(r"hermes-(?:gateway|dashboard)(?:-[A-Za-z0-9_-]+)?\.service",
+                        unit_name):
+        raise ValueError("runtime sandbox may only target Hermes runtime units")
+    dropdir = _systemd_dir() / f"{unit_name}.d"
+    dropdir.mkdir(parents=True, exist_ok=True)
+    conf = dropdir / "20-ollie-runtime-sandbox.conf"
+    conf.write_text(_RUNTIME_SANDBOX, newline="\n")
+    if os.name == "posix":
+        os.chmod(conf, 0o600)
+    return conf
 
 
 def write_session_token_dropin(unit_name: str) -> bool:
@@ -107,6 +164,7 @@ def install_dashboard_service(name: str, *, port: int) -> None:
     unit_path = _systemd_dir() / unit_name
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     unit_path.write_text(_DASHBOARD_UNIT_TEMPLATE.format(name=name, port=port))
+    write_runtime_sandbox_dropin(unit_name)
     # Before daemon-reload, so the unit starts with the token already pinned.
     write_session_token_dropin(unit_name)
     _systemctl("daemon-reload")

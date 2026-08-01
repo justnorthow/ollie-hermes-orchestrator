@@ -45,6 +45,25 @@ def test_valid_token_returns_200(app):
     assert r.json() == {"ok": True}
 
 
+def test_dashboard_caller_without_validated_identity_returns_401(app):
+    c = TestClient(app)
+    r = c.get("/protected", headers={
+        "Authorization": "Bearer topsecret",
+        "X-Ollie-Caller": "dashboard",
+    })
+    assert r.status_code == 401
+
+
+def test_dashboard_caller_with_validated_identity_returns_200(app):
+    c = TestClient(app)
+    r = c.get("/protected", headers={
+        "Authorization": "Bearer topsecret",
+        "X-Ollie-Caller": "dashboard",
+        "X-Auth-User-Id": "user-123",
+    })
+    assert r.status_code == 200
+
+
 def test_malformed_header_returns_401(app):
     c = TestClient(app)
     assert c.get("/protected", headers={"Authorization": "topsecret"}).status_code == 401
