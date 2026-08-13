@@ -1,7 +1,9 @@
 from pathlib import Path
 import pytest
 
-from src.profile_ops import create_profile, delete_profile, write_profile_env
+from src.profile_ops import (
+    create_profile, delete_profile, inherit_default_auth, write_profile_env,
+)
 
 
 def test_create_profile_invokes_hermes_and_creates_dir(fake_env):
@@ -56,3 +58,26 @@ def test_set_config_invokes_per_profile_shim(fake_env):
     # The per-profile shim is created during `profile create paige` and writes
     # to the same log file. We expect the config set call to be recorded.
     assert "config set model claude-sonnet-4.6" in log
+
+
+def test_inherit_default_auth_links_shared_credentials(fake_env, monkeypatch):
+    create_profile("paige")
+    (fake_env["hermes_home"] / "auth.json").write_text('{"access_token":"x"}')
+    calls = []
+
+    def fake_symlink(source, target):
+        calls.append((source, Path(target)))
+
+    monkeypatch.setattr("src.profile_ops.os.symlink", fake_symlink)
+    assert inherit_default_auth("paige") is True
+    assert Path(calls[0][0]) == Path("..") / ".." / "auth.json"
+    assert calls[0][1] == fake_env["profiles"] / "paige" / "auth.json"
+
+
+def test_inherit_default_auth_is_optional(fake_env, monkeypatch):
+    create_profile("paige")
+    monkeypatch.setattr(
+        "src.profile_ops.os.symlink",
+        lambda *_: pytest.fail("must not link a missing auth file"),
+    )
+    assert inherit_default_auth("paige") is False

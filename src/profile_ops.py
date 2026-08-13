@@ -167,3 +167,20 @@ def inherit_model_config(name: str) -> dict[str, str]:
             set_config(name, key, value)
             applied[key] = value
     return applied
+
+
+def inherit_default_auth(name: str) -> bool:
+    """Share the default profile's provider credentials with a new profile.
+
+    Hermes stores refreshed OAuth credentials in ``~/.hermes/auth.json`` but
+    resolves auth relative to each profile. A relative symlink keeps refreshes
+    synchronized instead of creating stale credential copies.
+    """
+    profiles_dir = _profiles_dir()
+    source = profiles_dir.parent / "auth.json"
+    target = profiles_dir / name / "auth.json"
+    if not source.is_file():
+        return False
+    target.unlink(missing_ok=True)
+    os.symlink(os.path.relpath(source, target.parent), target)
+    return True

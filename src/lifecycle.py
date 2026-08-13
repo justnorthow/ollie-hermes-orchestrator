@@ -11,7 +11,7 @@ from src.models import Agent
 from src.ports import allocate_ports
 from src.profile_ops import (
     create_profile, delete_profile, write_profile_env, set_config,
-    inherit_model_config, read_profile_env,
+    inherit_model_config, inherit_default_auth, read_profile_env,
 )
 from src.systemd_ops import install_gateway_service, install_dashboard_service, \
     stop_and_remove_service
@@ -113,6 +113,8 @@ async def create_agent(req: CreateRequest) -> AsyncIterator[dict]:
                 # OpenRouter, etc.). Without this the new profile has no
                 # provider configured and errors on first chat.
                 inherited = inherit_model_config(req.name)
+                if inherit_default_auth(req.name):
+                    inherited["auth.json"] = "shared"
             elif req.model:
                 # api_key path: user picked a model explicitly.
                 set_config(req.name, "model.default", req.model)
