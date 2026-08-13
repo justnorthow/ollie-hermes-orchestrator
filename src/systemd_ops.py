@@ -39,7 +39,6 @@ _RUNTIME_SANDBOX = """\
 NoNewPrivileges=yes
 PrivateUsers=yes
 PrivateTmp=yes
-PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=tmpfs
 BindPaths=%h/.hermes
@@ -50,11 +49,7 @@ InaccessiblePaths=-/run/docker.sock
 InaccessiblePaths=-/run/user/%U/bus
 InaccessiblePaths=-/run/user/%U/systemd
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
 ProtectControlGroups=yes
-ProtectClock=yes
-ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
 RestrictNamespaces=yes
@@ -62,11 +57,15 @@ RestrictSUIDSGID=yes
 RestrictRealtime=yes
 LockPersonality=yes
 RemoveIPC=yes
-CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 UMask=0077
+
+# Deliberately omitted for systemd --user services: PrivateDevices,
+# ProtectKernelModules, ProtectKernelLogs, ProtectClock, ProtectHostname, and
+# CapabilityBoundingSet. Unprivileged user managers on supported VPS hosts
+# cannot apply them and fail the unit at startup with status=218/CAPABILITIES.
 """
 
 

@@ -20,6 +20,11 @@ def test_install_gateway_service_calls_per_profile_install(fake_env):
     assert "NoNewPrivileges=yes" in text
     assert "ProtectHome=tmpfs" in text
     assert "InaccessiblePaths=-/var/run/docker.sock" in text
+    unsupported = (
+        "PrivateDevices=", "ProtectKernelModules=", "ProtectKernelLogs=",
+        "ProtectClock=", "ProtectHostname=", "CapabilityBoundingSet=",
+    )
+    assert not any(line.startswith(unsupported) for line in text.splitlines())
     systemctl = (fake_env["logs"] / "systemctl.log").read_text()
     assert "daemon-reload" in systemctl
     assert "try-restart hermes-gateway-paige.service" in systemctl
