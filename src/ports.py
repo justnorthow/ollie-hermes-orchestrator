@@ -3,7 +3,8 @@ from typing import Iterable
 
 GATEWAY_BASE = 8642
 DASHBOARD_BASE = 9119
-DASHBOARD_RESERVED = {9120}  # cortex
+# Ports occupied by platform services rather than agent dashboards.
+DASHBOARD_RESERVED = {9120, 9123}  # cortex, orchestrator
 
 
 @dataclass(frozen=True)

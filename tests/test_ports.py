@@ -13,12 +13,20 @@ def test_skips_cortex_dashboard_port_9120():
     assert a == PortAllocation(gateway=8644, dashboard=9122)
 
 
+def test_skips_orchestrator_port_9123():
+    a = allocate_ports(
+        existing_gateways=[8642, 8643, 8644],
+        existing_dashboards=[9119, 9121, 9122],
+    )
+    assert a == PortAllocation(gateway=8645, dashboard=9124)
+
+
 def test_returns_next_free_after_dense_allocation():
     a = allocate_ports(
         existing_gateways=[8642, 8643, 8644, 8645],
-        existing_dashboards=[9119, 9121, 9122, 9123],
+        existing_dashboards=[9119, 9121, 9122, 9124],
     )
-    assert a == PortAllocation(gateway=8646, dashboard=9124)
+    assert a == PortAllocation(gateway=8646, dashboard=9125)
 
 
 def test_finds_gaps():
