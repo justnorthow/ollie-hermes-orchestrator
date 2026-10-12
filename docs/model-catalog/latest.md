@@ -1,4 +1,4 @@
-# Model catalog check — 2026-10-05
+# Model catalog check — 2026-10-12
 
 ## Unknown ids — BLOCKING
 
@@ -6,6 +6,7 @@ Present in the catalog, absent from the provider. Either a typo or a retirement.
 
 - `anthropic` / `claude-opus-5`
 - `anthropic` / `claude-sonnet-5`
+- `anthropic` / `claude-haiku-4-5`
 
 ## Not on the checked page — REVIEW, not blocking
 
@@ -22,9 +23,23 @@ In the catalog, absent from the source we can check. That source does not enumer
 
 Not adopted automatically. Work the checklist per model, then edit `src/catalog.py` and `tests/fixtures/known_models.json` by hand.
 
-10 new ids found; showing full checklists for the first 5.
+11 new ids found; showing full checklists for the first 5.
 
 ### `anthropic` / `claude-fable-5-1`
+
+- [ ] Id is well-formed and present in the provider's live list
+- [ ] Price recorded (input / output per MTok)
+- [ ] Auth path confirmed — API key vs OAuth
+- [ ] Thinking default, and whether disabling it is accepted
+- [ ] Assistant prefill supported
+- [ ] Sampling parameters accepted
+- [ ] Data-retention or residency requirement
+- [ ] Context window and max output recorded
+- [ ] Speed / cost class assigned
+- [ ] Long-context pricing threshold and multipliers recorded
+- [ ] Which providers serve it
+
+### `anthropic` / `claude-haiku-5-5`
 
 - [ ] Id is well-formed and present in the provider's live list
 - [ ] Price recorded (input / output per MTok)
@@ -80,22 +95,9 @@ Not adopted automatically. Work the checklist per model, then edit `src/catalog.
 - [ ] Long-context pricing threshold and multipliers recorded
 - [ ] Which providers serve it
 
-### `openai` / `gpt-6-astra`
-
-- [ ] Id is well-formed and present in the provider's live list
-- [ ] Price recorded (input / output per MTok)
-- [ ] Auth path confirmed — API key vs OAuth
-- [ ] Thinking default, and whether disabling it is accepted
-- [ ] Assistant prefill supported
-- [ ] Sampling parameters accepted
-- [ ] Data-retention or residency requirement
-- [ ] Context window and max output recorded
-- [ ] Speed / cost class assigned
-- [ ] Long-context pricing threshold and multipliers recorded
-- [ ] Which providers serve it
-
 ### Further candidates needing triage
 
+- `openai` / `gpt-6-astra`
 - `openai` / `gpt-6-astra-texture`
 - `openai` / `gpt-6-luna`
 - `openai` / `gpt-6-luna-texture`
