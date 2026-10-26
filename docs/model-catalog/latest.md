@@ -1,4 +1,4 @@
-# Model catalog check — 2026-10-19
+# Model catalog check — 2026-10-26
 
 ## Unknown ids — BLOCKING
 
