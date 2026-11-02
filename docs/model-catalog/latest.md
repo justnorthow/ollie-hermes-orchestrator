@@ -1,4 +1,4 @@
-# Model catalog check — 2026-10-26
+# Model catalog check — 2026-11-02
 
 ## Unknown ids — BLOCKING
 
@@ -23,7 +23,7 @@ In the catalog, absent from the source we can check. That source does not enumer
 
 Not adopted automatically. Work the checklist per model, then edit `src/catalog.py` and `tests/fixtures/known_models.json` by hand.
 
-12 new ids found; showing full checklists for the first 5.
+14 new ids found; showing full checklists for the first 5.
 
 ### `anthropic` / `claude-fable-5-1`
 
@@ -104,6 +104,8 @@ Not adopted automatically. Work the checklist per model, then edit `src/catalog.
 - `openai` / `gpt-6-luna-texture`
 - `openai` / `gpt-6.1-sol`
 - `openai` / `gpt-6.1-sol-texture`
+- `openai` / `gpt-6.1-terra`
+- `openai` / `gpt-6.1-terra-block`
 
 ## Entries overdue for human review
 
