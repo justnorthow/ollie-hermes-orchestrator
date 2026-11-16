@@ -1,4 +1,4 @@
-# Model catalog check — 2026-11-09
+# Model catalog check — 2026-11-16
 
 ## Unknown ids — BLOCKING
 
@@ -25,7 +25,7 @@ Not adopted automatically. Work the checklist per model, then edit `src/catalog.
 
 15 new ids found; showing full checklists for the first 5.
 
-### `anthropic` / `claude-fable-5-1`
+### `anthropic` / `claude-fable-5-2`
 
 - [ ] Id is well-formed and present in the provider's live list
 - [ ] Price recorded (input / output per MTok)
